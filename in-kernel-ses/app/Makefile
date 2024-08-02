@@ -25,3 +25,6 @@ uet: uet.o uet_api.o
 
 
 all: uet
+
+clean:
+	rm -rf *.o uet
