@@ -26,8 +26,6 @@
 #ifndef _AES_H_
 #define _AES_H_
 
-#include <stdint.h>
-
 #define AES_ENCRYPT(ctx, buf) aes_encrypt((ctx), (buf), (buf))
 #define AES_DECRYPT(ctx, buf) aes_decrypt((ctx), (buf), (buf))
 

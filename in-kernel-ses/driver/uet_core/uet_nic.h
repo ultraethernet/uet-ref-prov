@@ -8,21 +8,10 @@
 #ifndef _UET_NIC_H_
 #define _UET_NIC_H_
 
-#include <stdint.h>
-#include <assert.h>
-#include <net/if.h>
-#include <netinet/in.h>
-#include <linux/if_ether.h>
-
-//#include <rdma/fabric.h>
+#include <linux/if.h>
+#include <linux/inet.h>
 
 #include "uet_uapi.h"
-
-//#define UET_NIC_DEBUG_HEXDUMP
-
-/* environment variables to control the NIC interface */
-#define UET_NIC_SHIM  "UET_NIC_SHIM"
-#define UET_IFNAME    "UET_IFNAME"
 
 #define UET_MAX_SYS_CMD_OCTETS  256
 #define UET_NET_TYPE_SIZE 32
@@ -106,7 +95,7 @@ int uet_nic_initialize(struct uet_nic *nic);
 static inline void uet_nic_finalize(struct uet_nic *nic)
 {
 	if (!nic)
-		assert(0);
+		BUG();
 
 	return nic->nic_finalize(nic);
 }
@@ -126,7 +115,7 @@ static inline int uet_nic_getinfo(struct uet_nic *nic,
 				  struct uet_nic_info *nic_info)
 {
 	if (!nic || !nic_info)
-		assert(0);
+		BUG();
 
 	return nic->nic_getinfo(nic, nic_info);
 }
@@ -148,7 +137,7 @@ static inline int uet_nic_get_ipv4_nh(struct uet_nic *nic,
 				      uint8_t *mac)
 {
 	if (!nic || !mac)
-		assert(0);
+		BUG();
 
 	return nic->nic_get_ipv4_nh(nic, dst_ip, mac);
 }
@@ -172,7 +161,7 @@ static inline int uet_nic_tx_pkt(struct uet_nic *nic,
 				 size_t pkt_size)
 {
 	if (!nic || !pkt || !pkt_size)
-		assert(0);
+		BUG();
 
 	return nic->nic_tx_pkt(nic, pkt, iphdr, pkt_size);
 }
@@ -198,7 +187,7 @@ static inline int uet_nic_rx_pkt(struct uet_nic *nic,
 				 size_t *rx_pkt_size)
 {
 	if (!nic || !pkt || !pkt_buf_size || !rx_pkt_size)
-		assert(0);
+		BUG();
 
 	return nic->nic_rx_pkt(nic, pkt, pkt_buf_size, rx_pkt_size);
 }
@@ -217,7 +206,7 @@ static inline int uet_nic_rx_pkt(struct uet_nic *nic,
 static inline int uet_nic_rx_poll(struct uet_nic *nic)
 {
 	if (!nic)
-		assert(0);
+		BUG();
 
 	return nic->nic_rx_poll(nic);
 }
@@ -240,7 +229,7 @@ static inline int uet_nic_mr_reg(struct uet_nic *nic,
 				 uet_nic_mr_handle_t *handle)
 {
 	if (!nic || !desc || !handle)
-		assert(0);
+		BUG();
 
 	return nic->nic_mr_reg(nic, desc, handle);
 }
@@ -260,7 +249,7 @@ static inline int uet_nic_mr_dereg(struct uet_nic *nic,
 				   uet_nic_mr_handle_t handle)
 {
 	if (!nic || !handle)
-		assert(0);
+		BUG();
 
 	return nic->nic_mr_dereg(nic, handle);
 }

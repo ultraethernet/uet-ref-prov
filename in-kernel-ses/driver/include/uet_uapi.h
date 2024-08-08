@@ -1,8 +1,6 @@
 
 #ifndef _UET_UAPI_H_
 #define _UET_UAPI_H_
-#include <stddef.h>
-#include <stdbool.h>
 
 #include "uet_addr.h"
 
@@ -176,11 +174,6 @@ static inline void uet_init_uet_addr_ipv4(struct uet_addr *uet_addr,
 	uet_addr->fa.v4 = ipv4_addr;
 }
 
-
-extern int uet_initialize_internal(uet_handle_t *handle);
-
-extern int uet_finalize_internal(uet_handle_t handle);
-
 enum uet_nic_state {
 	UET_NIC_STATE_UNKNOWN,
 	UET_NIC_STATE_DOWN,
@@ -195,19 +188,6 @@ struct uet_nic_info {
 	enum uet_nic_state state;
 };
 
-extern int uet_nic_getinfo_internal(uet_handle_t handle, 
-		struct uet_nic_info *nic_info);
-
-extern int uet_get_nic_addr_ipv4_internal(uet_handle_t handle, 
-		uint32_t *ipv4_addr);
-
-extern int uet_domain_internal(uet_handle_t handle, size_t mr_cnt, 
-		int mr_mode, void *context, 
-		uet_domain_handle_t *domain_handle);
-
-extern int uet_domain_close_internal(
-		uet_domain_handle_t domain_handle);
-
 /* pds delivery modes */
 typedef enum {
 	UET_PDS_MODE_UUD,
@@ -216,15 +196,6 @@ typedef enum {
 	UET_PDS_MODE_RUDI,
 } uet_pds_mode_t;
 
-extern int uet_endpoint_internal(uet_domain_handle_t domain_handle,
-	void *src_addr, int32_t src_addrlen, int32_t num_rx_desc, 
-	int32_t num_tx_desc, uet_pds_mode_t pds_mode,
-	uint32_t tclass, bool use_default_tos, void *context, 
-	uet_ep_handle_t *ep_handle);
-
-extern int uet_getname_internal(uet_ep_handle_t ep_handle, 
-			struct uet_addr *uet_addr);
-
 enum uet_cq_type {
 	UET_CQ_TYPE_UNSPEC,
 	UET_CQ_TYPE_CONTEXT,
@@ -232,15 +203,6 @@ enum uet_cq_type {
 	UET_CQ_TYPE_DATA,
 	UET_CQ_TYPE_TAGGED,
 };
-
-extern int uet_ep_bind_cq_internal(uet_ep_handle_t ep_handle, 
-		uint64_t cq_flags, enum uet_cq_type cq_type, 
-		size_t cq_size, void *context, 
-		uet_cq_handle_t *cq_handle);
-
-extern int uet_ep_enable_internal(uet_ep_handle_t ep_handle);
-
-extern int uet_ep_close_internal(uet_ep_handle_t ep_handle);
 
 /* CQ entry descriptor */
 struct uet_cq_entry {
@@ -259,45 +221,292 @@ struct uet_cq_entry {
 	uint64_t		src_addr;
 };
 
-extern ssize_t uet_cq_read_internal(uet_cq_handle_t cq_handle, 
-			void *buf, size_t count);
+#define UET_IOCTL_BASE					_IO('U', 0)
 
-extern ssize_t uet_cq_readerr_internal(uet_cq_handle_t cq_handle,
-		       struct uet_cq_entry *buf);
+#define UET_IOCTL_INSTANCE_CREATE		(UET_IOCTL_BASE + 1)
+#define UET_IOCTL_INSTANCE_FINALIZE		(UET_IOCTL_BASE + 2)
+#define UET_IOCTL_NIC_GET_INFO			(UET_IOCTL_BASE + 3)
+#define UET_IOCTL_NIC_GET_ADDR_IPV4		(UET_IOCTL_BASE + 4)
+#define UET_IOCTL_DOMAIN_CREATE			(UET_IOCTL_BASE + 5)
+#define UET_IOCTL_DOMAIN_CLOSE			(UET_IOCTL_BASE + 6)
+#define UET_IOCTL_EP_CREATE				(UET_IOCTL_BASE + 7)
+#define UET_IOCTL_EP_GET_NAME			(UET_IOCTL_BASE + 8)
+#define UET_IOCTL_EP_BIND_CQ			(UET_IOCTL_BASE + 9)
+#define UET_IOCTL_EP_ENABLE				(UET_IOCTL_BASE + 10)
+#define UET_IOCTL_EP_CLOSE				(UET_IOCTL_BASE + 11)
+#define UET_IOCTL_CQ_READ				(UET_IOCTL_BASE + 12)
+#define UET_IOCTL_CQ_READERR			(UET_IOCTL_BASE + 13)
+#define UET_IOCTL_CQ_CLOSE				(UET_IOCTL_BASE + 14)
+#define UET_IOCTL_AV_INSERT				(UET_IOCTL_BASE + 15)
+#define UET_IOCTL_AV_REMOVE				(UET_IOCTL_BASE + 16)
+#define UET_IOCTL_MR_REG				(UET_IOCTL_BASE + 17)
+#define UET_IOCTL_MR_KEY				(UET_IOCTL_BASE + 18)
+#define UET_IOCTL_MR_BIND_EP			(UET_IOCTL_BASE + 19)
+#define UET_IOCTL_MR_ENABLE				(UET_IOCTL_BASE + 20)
+#define UET_IOCTL_MR_CLOSE				(UET_IOCTL_BASE + 21)
+#define UET_IOCTL_REQ_SEND				(UET_IOCTL_BASE + 22)
+#define UET_IOCTL_REQ_RECV				(UET_IOCTL_BASE + 23)
+#define UET_IOCTL_MAX					(UET_IOCTL_BASE + 24)
 
-extern int uet_cq_close_internal(uet_cq_handle_t cq_handle);
+struct uet_ioctl_inst_init_args {
+	struct {
+		int rc;
+		uet_handle_t handle;
+	} out;
+};
 
-extern int uet_av_insert_internal(uet_domain_handle_t domain_handle,
-		  struct uet_addr *uet_addr,
-		  uet_addr_handle_t *addr_handle);
+struct uet_ioctl_inst_finalize_args {
+	struct {
+		uet_handle_t handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
 
-extern int uet_av_remove_internal(uet_addr_handle_t addr_handle);
+struct uet_ioctl_nic_getinfo_args {
+	struct {
+		uet_handle_t handle;
+	} in;
+	struct {
+		int rc;
+		struct uet_nic_info nic_info;
+	} out;
+};
 
-extern int uet_mr_reg_internal(uet_domain_handle_t domain_handle, 
-		void *buf, size_t len, uint64_t access, 
-		uint64_t requested_key, uint64_t flags, 
-		void *context, uet_mr_handle_t *mr_handle);
+struct uet_ioctl_nic_get_addr_ipv4 {
+	struct {
+		uet_handle_t handle;
+	} in;
+	struct {
+		int rc;
+		uint32_t ipv4_addr;
+	} out;
+};
 
-extern uint64_t uet_mr_key_internal(uet_mr_handle_t mr_handle);
+struct uet_ioctl_domain_create_args {
+	struct {
+		uet_handle_t handle;
+		size_t mr_cnt;
+		int mr_mode;
+		unsigned long context;
+	} in;
+	struct {
+		int rc;
+		uet_domain_handle_t domain_handle;
+	} out;
+};
 
-extern int uet_ep_bind_mr_internal(uet_ep_handle_t ep_handle,
-		   uet_mr_handle_t mr_handle);
+struct uet_ioctl_domain_close_args {
+	struct {
+		uet_domain_handle_t domain_handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
 
-extern int uet_mr_enable_internal(uet_mr_handle_t mr_handle);
+struct uet_ioctl_ep_create_args {
+	struct {
+		uet_domain_handle_t domain_handle;
+		struct uet_addr src_addr;
+		int32_t src_addrlen;
+		int32_t num_rx_desc;
+		int32_t num_tx_desc;
+		uet_pds_mode_t pds_mode;
+		uint32_t tclass;
+		int use_default_tos;
+		unsigned long context;
+	} in;
+	struct {
+		int rc;
+		uet_ep_handle_t ep_handle;
+	} out;
+};
 
-extern int uet_mr_close_internal(uet_mr_handle_t mr_handle);
+struct uet_ioctl_ep_get_name_args {
+	struct {
+		uet_ep_handle_t ep_handle;
+	} in;
+	struct {
+		int rc;
+		struct uet_addr uet_addr;
+	} out;
+};
 
-extern ssize_t uet_send_req_api_common(
-	uet_send_req_api_t send_req_api, 
-	uet_ep_handle_t ep_handle, uint32_t job_id, void *buf, 
-	size_t len, uet_mr_handle_t mr_handle, 
-	uet_addr_handle_t dst_addr_handle, uint64_t tag, 
-	uint64_t *imm_data, uint64_t remote_mem_addr, 
-	uint64_t remote_key, void *context);
+struct uet_ioctl_ep_bind_cq_args {
+	struct {
+		uet_ep_handle_t ep_handle;
+		uint64_t cq_flags;
+		enum uet_cq_type cq_type;
+		size_t cq_size;
+		unsigned long context;
+	} in;
+	struct {
+		int rc;
+		uet_cq_handle_t cq_handle;
+	} out;
+};
 
-extern ssize_t uet_recv_api_common(uet_recv_api_t recv_api, 
-		uet_ep_handle_t ep_handle, uint32_t job_id, 
-		void *buf, size_t len, uet_mr_handle_t mr_handle, 
-		uet_addr_handle_t src_addr_handle, uint64_t tag, 
-		uint64_t ignore, void *context);
+struct uet_ioctl_ep_enable_args {
+	struct {
+		uet_ep_handle_t ep_handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
+struct uet_ioctl_ep_close_args {
+	struct {
+		uet_ep_handle_t ep_handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
+struct uet_ioctl_cq_read_args {
+	struct {
+		uet_cq_handle_t cq_handle;
+	} in;
+	struct {
+		int rc;
+		size_t count;
+		char buf[0];
+	} out;
+};
+
+struct uet_ioctl_cq_readerr_args {
+	struct {
+		uet_cq_handle_t cq_handle;
+	} in;
+	struct {
+		int rc;
+		size_t count;
+		struct uet_cq_entry buf;
+	} out;
+};
+
+struct uet_ioctl_cq_close_args {
+	struct {
+		uet_cq_handle_t cq_handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
+struct uet_ioctl_av_insert_args {
+	struct {
+		uet_domain_handle_t domain_handle;
+		struct uet_addr uet_addr;
+	} in;
+	struct {
+		int rc;
+		uet_addr_handle_t addr_handle;
+	} out;
+};
+
+struct uet_ioctl_av_remove_args {
+	struct {
+		uet_addr_handle_t addr_handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
+struct uet_ioctl_mr_reg_args {
+	struct {
+		uet_domain_handle_t domain_handle;
+		void __user *buf;
+		size_t len;
+		uint64_t access;
+		uint64_t requested_key;
+		uint64_t flags;
+		unsigned long context;
+	} in;
+	struct {
+		int rc;
+		uet_mr_handle_t mr_handle;
+	} out;
+};
+
+struct uet_ioctl_mr_key_args {
+	struct {
+		uet_mr_handle_t mr_handle;
+	} in;
+	struct {
+		int rc;
+		uint64_t mr_key;
+	} out;
+};
+
+struct uet_ioctl_ep_bind_mr_args {
+	struct {
+		uet_ep_handle_t ep_handle;
+		uet_mr_handle_t mr_handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
+struct uet_ioctl_mr_enable_args {
+	struct {
+		uet_mr_handle_t mr_handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
+struct uet_ioctl_mr_close_args {
+	struct {
+		uet_mr_handle_t mr_handle;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
+struct uet_ioctl_send_req_args {
+	struct {
+		uet_send_req_api_t send_req_api;
+		uet_ep_handle_t ep_handle;
+		uint32_t job_id;
+		void __user *buf;
+		size_t len;
+		uet_mr_handle_t mr_handle;
+		uet_addr_handle_t dst_addr_handle;
+		uint64_t tag;
+		uint64_t __user *imm_data;
+		uint64_t remote_mem_addr;
+		uint64_t remote_key;
+		unsigned long context;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
+struct uet_ioctl_recv_api_args {
+	struct {
+		uet_recv_api_t recv_api;
+		uet_ep_handle_t ep_handle;
+		uint32_t job_id;
+		void __user *buf;
+		size_t len;
+		uet_mr_handle_t mr_handle;
+		uet_addr_handle_t src_addr_handle;
+		uint64_t tag;
+		uint64_t ignore;
+		unsigned long context;
+	} in;
+	struct {
+		int rc;
+	} out;
+};
+
 #endif

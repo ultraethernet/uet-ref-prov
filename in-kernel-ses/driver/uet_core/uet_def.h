@@ -2,29 +2,8 @@
 #ifndef _UET_DEF_H
 #define _UET_DEF_H
 
-#include <stdio.h>
-#include <stdbool.h>
-#include <uthash.h>
-#include <linux/if_ether.h>
-
+#include "uthash.h"
 #include "uet_list.h"
-
-#define UET_PRINT_ERR(fmt, ...)				\
-	fprintf(stderr, "UET PRINT: %s:%-4d: " fmt "\n",	\
-		__FILE__, __LINE__, ##__VA_ARGS__)
-
-#define UET_PRINT_ENABLED false /* true => debug messages enabled */
-
-#define UET_PRINT_DEBUG(fmt, ...)                                              \
-	do {                                                                 \
-		if (UET_PRINT_ENABLED)                                   \
-			fprintf(stderr, "UET PRINT: [%s] %s:%-4d: " fmt "\n",  \
-				"error", __FILE__, __LINE__, ##__VA_ARGS__); \
-	} while (0)
-
-#define UET_PRINT_ERRCODE(CALL)                                     \
-	fprintf(stderr, "UET_PRINT: %s(): %s:%-4d, ret = %d (%s)\n",    \
-		(CALL), __FILE__, __LINE__, errno, strerror(errno))
 
 typedef uint64_t uet_dma_addr_t;
 

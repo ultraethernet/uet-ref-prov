@@ -8,10 +8,8 @@
 #ifndef _UET_PKT_HDR_H_
 #define _UET_PKT_HDR_H_
 
-#include <netinet/if_ether.h>
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <arpa/inet.h>
+#include <linux/bitops.h>
+#include <linux/byteorder/generic.h>
 
 #define UET_MAX_VLAN_TAGS	2
 

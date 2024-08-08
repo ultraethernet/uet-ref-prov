@@ -8,9 +8,9 @@
 #ifndef _UET_UTIL_H_
 #define _UET_UTIL_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-//#include <rdma/fi_errno.h>
+#include <linux/spinlock_types.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
 
 #include "uet_addr.h"
 #include "uet_pkt_hdr.h"
@@ -34,6 +34,7 @@ typedef enum {
 	UET_RW_LOCK_WR_ACCESS
 } uet_rw_lock_access_t;
 
+#if 0
 typedef enum {
 	UET_RW_LOCK_WR_ACQUIRED_VAL = -1,
 	UET_RW_LOCK_IDLE_VAL = 0,
@@ -43,6 +44,13 @@ typedef enum {
 struct uet_rw_lock {
 	uet_rw_lock_val_t val;
 };
+#else
+
+struct uet_rw_lock {
+	rwlock_t lock;
+};
+
+#endif
 
 /* parsed uet packet                                         */
 /*   - ptr's to headers can be NULL if header is not present */
@@ -116,7 +124,10 @@ struct uet_parsed_pkt {
 
 struct uet_instance; /* forward reference */
 
-int uet_gettime(time_t *time_ms);
+static inline uint64_t uet_gettime(uint64_t *time_ms)
+{
+	return (*time_ms = jiffies);
+}
 void uet_mac_addr_to_str(char *mac_addr_str, uint8_t *mac_addr);
 void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str);
 char *uet_ses_rc_to_str(uet_ses_rc_t rc);
@@ -128,15 +139,52 @@ void uet_print_ipv4_hdr(struct iphdr *ipv4);
 void uet_print_uet_hdr(struct uet_parsed_pkt *pp);
 void uet_print_pkt_hdrs(struct uet_parsed_pkt *pp);
 size_t uet_roundup_8(size_t val);
-uint8_t uet_dscp_to_tos(uint8_t dscp);
+
+static inline uint8_t uet_dscp_to_tos(uint8_t dscp)
+{
+	return (dscp << 2);
+}
+
 uint16_t uet_csum(uint16_t *buf, int cnt);
 uint16_t uet_ipv4_csum(struct iphdr *ipv4);
 void uet_build_ipv4_hdr(struct iphdr *ipv4, uint32_t dip, 
 			uint32_t sip, uint16_t tot_len, uint8_t tos);
 void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac);
 void uet_pkt_hex_dump(void *pkt, uint32_t length, uint64_t addr, bool is_tx);
-void uet_rw_lock(struct uet_rw_lock *lock, uet_rw_lock_access_t access);
-void uet_rw_unlock(struct uet_rw_lock *lock, uet_rw_lock_access_t access);
+
+static inline void uet_rw_lock(struct uet_rw_lock *lock, uet_rw_lock_access_t access)
+{
+	switch(access) {
+		case UET_RW_LOCK_RD_ACCESS:
+			read_lock(&lock->lock);
+			break;
+		case UET_RW_LOCK_WR_ACCESS:
+			write_lock(&lock->lock);
+			break;
+		default:
+			BUG_ON(1);
+	}
+}
+
+static inline void uet_rw_unlock(struct uet_rw_lock *lock, uet_rw_lock_access_t access)
+{
+	switch(access) {
+		case UET_RW_LOCK_RD_ACCESS:
+			read_unlock(&lock->lock);
+			break;
+		case UET_RW_LOCK_WR_ACCESS:
+			write_unlock(&lock->lock);
+			break;
+		default:
+			BUG_ON(1);
+	}
+}
+
+static inline void uet_rw_lock_init(struct uet_rw_lock *lock)
+{
+	rwlock_init(&lock->lock);
+}
+
 uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
 				     uint16_t max_payload_len);
 int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp, 

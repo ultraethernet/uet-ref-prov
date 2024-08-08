@@ -8,9 +8,7 @@
 #ifndef _UET_ADDR_H_
 #define _UET_ADDR_H_
 
-#include <stdint.h>
-
-	/* TODO: remove defaults when address resolution is implemented */
+/* TODO: remove defaults when address resolution is implemented */
 #define UET_ADDR_DEF_PID_ON_FEP		0
 #define UET_ADDR_DEF_INDEX		15
 #define UET_ADDR_DEF_INITIATOR_ID	16

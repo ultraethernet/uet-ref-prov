@@ -1,5 +1,5 @@
 
-SUBDIRS = app driver
+SUBDIRS = driver/uet_core
 
 all:
 	for dir in $(SUBDIRS) ; do \

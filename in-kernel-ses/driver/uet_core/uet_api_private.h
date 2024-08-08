@@ -7,10 +7,7 @@
 #ifndef _UET_API_PRIVATE_H_
 #define _UET_API_PRIVATE_H_
 
-#include <stdio.h>
-#include <stdbool.h>
-#include <uthash.h>
-#include <linux/if_ether.h>
+#include <linux/types.h>
 
 #include "uet_list.h"
 #include "uet_uapi.h"
@@ -20,7 +17,7 @@
 #include "uet_def.h"
 
 #define UET_API_ERR(fmt, ...)				\
-	fprintf(stderr, "UET API: %s:%-4d: " fmt "\n",	\
+	pr_err("UET API: %s:%-4d: " fmt "\n",	\
 		__FILE__, __LINE__, ##__VA_ARGS__)
 
 #define UET_API_DEBUG_ENABLED false /* true => debug messages enabled */
@@ -28,13 +25,13 @@
 #define UET_API_DEBUG(fmt, ...)                                              \
 	do {                                                                 \
 		if (UET_API_DEBUG_ENABLED)                                   \
-			fprintf(stderr, "UET API: [%s] %s:%-4d: " fmt "\n",  \
+			pr_debug("UET API: [%s] %s:%-4d: " fmt "\n",  \
 				"error", __FILE__, __LINE__, ##__VA_ARGS__); \
 	} while (0)
 
 #define UET_API_PRINT_ERRNO(CALL)                                     \
-	fprintf(stderr, "UET_API: %s(): %s:%-4d, ret = %d (%s)\n",    \
-		(CALL), __FILE__, __LINE__, errno, strerror(errno))
+	pr_err("UET_API: %s(): %s:%-4d\n",    \
+		(CALL), __FILE__, __LINE__)
 
 /* hash lookup key for received messages */
 struct uet_rx_msg_key {
@@ -110,7 +107,7 @@ struct uet_rx_desc {
 	struct uet_mr_desc *mr_desc;          /* ptr to mr desc if applicable */
 	uint64_t imm_data;                        /* data for write immediate */
 	struct uet_ep *uet_ep;             /* endpoint msg is associated with */
-	time_t prev_pkt_time;     /* time most recent pkt of msg was received */
+	uint64_t prev_pkt_time;     /* time most recent pkt of msg was received */
 	struct uet_tx_desc *tx_desc;     /* associated tx descriptor for read */
 	size_t expected_rd_rsp;          /* number of expected read responses */
 };
@@ -201,13 +198,13 @@ struct uet_tx_desc {
 	struct uet_ep *uet_ep;             /* endpoint msg is associated with */
 	uint64_t seq_num;	   /* local sequence number used for ordering */
 	uint32_t retransmit_cnt; /* number of time msg has been retransmitted */
-	time_t backoff_max;      /* max backoff time in msecs for retransmits */
-	time_t tx_time;		      /* earliest time msg can be transmitted */
+	uint64_t backoff_max;      /* max backoff time in msecs for retransmits */
+	uint64_t tx_time;		      /* earliest time msg can be transmitted */
 	bool delay_retx;          /* parm for deferred message retransmission */
 	int err_code;                                           /* error info */
 	uint16_t local_rtr_token;		       /* local restart token */
 	uint32_t remote_rtr_token;		      /* remote restart token */
-	time_t defer_time;			     /* time msg was deferred */
+	uint64_t defer_time;			     /* time msg was deferred */
 	struct uet_rx_desc *rx_desc;     /* associated rx descriptor for read */
 	struct uet_rd_rsp_info rd_rsp;             /* info for tx of read rsp */
 	struct uet_ephemeral_av ephemeral_av;  /* av for tx of read rsp & rtr */
@@ -269,9 +266,9 @@ struct uet_instance {
 	uint8_t default_msg_ip_tos;               /* default ip tos for msg's */
 	uint32_t msg_rndz_size;           /* threshold for message rendezvous */
 	uint32_t tag_rndz_size;        /* threshold for tagged msg rendezvous */
-	time_t idle_rx_msg_timeout;           /* timeout for partial rx msg's */
-	time_t idle_dsend_msg_timeout;     /* timeout for deferred send msg's */
-	time_t idle_rtr_msg_timeout;        /* timeout for buffered rtr msg's */
+	uint64_t idle_rx_msg_timeout;           /* timeout for partial rx msg's */
+	uint64_t idle_dsend_msg_timeout;     /* timeout for deferred send msg's */
+	uint64_t idle_rtr_msg_timeout;        /* timeout for buffered rtr msg's */
 	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
 	uint32_t max_rtr_q_entries;         /* max num of rtr msg's to buffer */
 	struct uet_msg_id_cb msg_id_cb;        /* used for assigning msg id's */
@@ -404,5 +401,83 @@ struct uet_ack_d_info {
 	uint32_t msg_off;                               /* msg offset of data */
 	void *buf;                                             /* ptr to data */
 };
+
+
+extern int uet_initialize_internal(uet_handle_t *handle);
+
+extern int uet_finalize_internal(uet_handle_t handle);
+
+extern int uet_nic_getinfo_internal(uet_handle_t handle, 
+		struct uet_nic_info *nic_info);
+
+extern int uet_get_nic_addr_ipv4_internal(uet_handle_t handle, 
+		uint32_t *ipv4_addr);
+
+extern int uet_domain_internal(uet_handle_t handle, size_t mr_cnt, 
+		int mr_mode, void *context, 
+		uet_domain_handle_t *domain_handle);
+
+extern int uet_domain_close_internal(
+		uet_domain_handle_t domain_handle);
+
+extern int uet_endpoint_internal(uet_domain_handle_t domain_handle,
+	void *src_addr, int32_t src_addrlen, int32_t num_rx_desc, 
+	int32_t num_tx_desc, uet_pds_mode_t pds_mode,
+	uint32_t tclass, int use_default_tos, void *context, 
+	uet_ep_handle_t *ep_handle);
+
+extern int uet_getname_internal(uet_ep_handle_t ep_handle, 
+			struct uet_addr *uet_addr);
+
+extern int uet_ep_bind_cq_internal(uet_ep_handle_t ep_handle, 
+		uint64_t cq_flags, enum uet_cq_type cq_type, 
+		size_t cq_size, void *context, 
+		uet_cq_handle_t *cq_handle);
+
+extern int uet_ep_enable_internal(uet_ep_handle_t ep_handle);
+
+extern int uet_ep_close_internal(uet_ep_handle_t ep_handle);
+
+extern ssize_t uet_cq_read_internal(uet_cq_handle_t cq_handle, 
+			void *buf, size_t count);
+
+extern ssize_t uet_cq_readerr_internal(uet_cq_handle_t cq_handle,
+		       struct uet_cq_entry *buf);
+
+extern int uet_cq_close_internal(uet_cq_handle_t cq_handle);
+
+extern int uet_av_insert_internal(uet_domain_handle_t domain_handle,
+		  struct uet_addr *uet_addr,
+		  uet_addr_handle_t *addr_handle);
+
+extern int uet_av_remove_internal(uet_addr_handle_t addr_handle);
+
+extern int uet_mr_reg_internal(uet_domain_handle_t domain_handle, 
+		void __user *buf, size_t len, uint64_t access, 
+		uint64_t requested_key, uint64_t flags, 
+		void *context, uet_mr_handle_t *mr_handle);
+
+extern uint64_t uet_mr_key_internal(uet_mr_handle_t mr_handle);
+
+extern int uet_ep_bind_mr_internal(uet_ep_handle_t ep_handle,
+		   uet_mr_handle_t mr_handle);
+
+extern int uet_mr_enable_internal(uet_mr_handle_t mr_handle);
+
+extern int uet_mr_close_internal(uet_mr_handle_t mr_handle);
+
+extern ssize_t uet_send_req_api_common(
+	uet_send_req_api_t send_req_api, 
+	uet_ep_handle_t ep_handle, uint32_t job_id, void __user *buf, 
+	size_t len, uet_mr_handle_t mr_handle, 
+	uet_addr_handle_t dst_addr_handle, uint64_t tag, 
+	uint64_t __user *imm_data, uint64_t remote_mem_addr, 
+	uint64_t remote_key, void *context);
+
+extern ssize_t uet_recv_api_common(uet_recv_api_t recv_api, 
+		uet_ep_handle_t ep_handle, uint32_t job_id, 
+		void __user *buf, size_t len, uet_mr_handle_t mr_handle, 
+		uet_addr_handle_t src_addr_handle, uint64_t tag, 
+		uint64_t ignore, void *context);
 
 #endif /* _UET_API_PRIVATE_H_ */

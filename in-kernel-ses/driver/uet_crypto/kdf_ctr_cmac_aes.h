@@ -6,8 +6,6 @@
 #ifndef _KDF_CTR_CMAC_AES_
 #define _KDF_CTR_CMAC_AES_
 
-#include <stdint.h>
-
 void kdf_ctr_cmac_aes_fixed(uint8_t *key,
 			    uint32_t keybits,
 			    uint32_t ctr_len,

@@ -8,9 +8,6 @@
 #ifndef _UET_PDS_H_
 #define _UET_PDS_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-
 #include "uet_list.h"
 
 #include "uet_pkt_hdr.h"
@@ -286,9 +283,9 @@ struct uet_pds_to_ses_funcs {
 struct uet_pds {
 	struct uet_ses_to_pds_funcs downcall;     /* ptr's to pds functions */
 	struct uet_pds_to_ses_funcs upcall;       /* ptr's to ses functions */
-	time_t tx_timeout;               /* retry after this amount of time */
+	uint64_t tx_timeout;               /* retry after this amount of time */
 	int    max_tx_retries;             /* max tx retries before failing */
-	time_t msl;                    /* max segment lifetime in millisecs */
+	uint64_t msl;                    /* max segment lifetime in millisecs */
 	uint8_t ack_ip_tos;                             /* ip tos for ack's */
 	uint16_t max_ack_data;               /* max data carried in pds ack */
 };

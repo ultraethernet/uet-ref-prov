@@ -3,8 +3,6 @@
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
-#include <stdint.h>
-
 #include "uet_util.h"
 #include "uet_uapi.h"
 

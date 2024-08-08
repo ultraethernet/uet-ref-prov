@@ -35,16 +35,7 @@
 #ifndef _UET_LIST_H_
 #define _UET_LIST_H_
 
-//#include "config.h"
-
-#include <sys/types.h>
-#include <stdlib.h>
-
-//#include <rdma/fabric.h>
-
-//#include <ofi_signal.h>
-//#include <ofi_lock.h>
-
+#include <linux/stddef.h>
 
 /*
  * Double-linked list

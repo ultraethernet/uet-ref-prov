@@ -1,15 +1,9 @@
 
-#include <stdint.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdbool.h>
-#include <string.h>
-#include <time.h>
-#include <errno.h>
+#include <linux/types.h>
 
 #include "uet_pkt_hdr.h"
 #include "uet_sec.h"
+#include "uet_util.h"
 #include "uet_api_private.h"
 
 /* get pds mode for an endpoint */
@@ -598,14 +592,14 @@ static void uet_mr_hash_insert(struct uet_ep *uet_ep,
 /* remove all entries from mr hash table and free associated memory */
 static void uet_mr_hash_finalize(struct uet_ep *uet_ep)
 {
-	struct uet_mr_desc *current, *tmp;
+	struct uet_mr_desc *curr, *tmp;
 
-	HASH_ITER(mr_hh, uet_ep->mr_hash_table, current, tmp) {
-		HASH_DELETE(mr_hh, uet_ep->mr_hash_table, current);
+	HASH_ITER(mr_hh, uet_ep->mr_hash_table, curr, tmp) {
+		HASH_DELETE(mr_hh, uet_ep->mr_hash_table, curr);
 		uet_nic_mr_dereg(UET_NIC(uet_ep->uet_domain->uet),
-				 current->nic_mr_handle);
-		current->state = UET_MR_DESC_STATE_DISABLED_REG;
-		current->uet_ep = NULL;
+				 curr->nic_mr_handle);
+		curr->state = UET_MR_DESC_STATE_DISABLED_REG;
+		curr->uet_ep = NULL;
 	}
 }
 
@@ -624,9 +618,9 @@ static struct uet_mr_desc *uet_mr_hash_lookup(
 static int uet_ring_init(struct uet_ring *ring, size_t entry_size,
 			 size_t num_entries)
 {
-	ring->base = calloc(num_entries+1, entry_size);
+	ring->base = kcalloc(num_entries+1, entry_size, GFP_KERNEL);
 	if (ring->base == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		return -ENOMEM;
 	}
 
@@ -671,7 +665,7 @@ static bool uet_ring_empty(struct uet_ring *ring)
 static void uet_ring_free_entries(struct uet_ring *ring)
 {
 	if (ring->base != NULL) {
-		free(ring->base);
+		kfree(ring->base);
 		ring->base = NULL;
 	}
 }
@@ -833,7 +827,7 @@ static void uet_tx_desc_recycle(struct uet_tx_desc *tx_desc,
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_MSG_ID_ALLOCATED) {
 		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_MSG_ID_ALLOCATED;
 		uet_dealloc_msg_id(tx_desc->uet_ep->uet_domain->uet,
-				   &tx_desc->msg_id);
+				   tx_desc->msg_id);
 	}
 
 	/* deallocate restart token associated with descriptor */
@@ -894,7 +888,7 @@ static void uet_desc_free(struct uet_ep *uet_ep)
 		return;
 
 	if (uet_ep->rx_desc)
-		free(uet_ep->rx_desc);
+		kfree(uet_ep->rx_desc);
 
 	if (uet_ep->tx_desc) {
 		for (i = 0; i < uet_ep->num_tx_desc; i++) {
@@ -906,7 +900,7 @@ static void uet_desc_free(struct uet_ep *uet_ep)
 			uet_dealloc_tx_rtr_token(tx_desc);
 			uet_tx_desc_buf_rtr_list_remove(tx_desc);
 		}
-		free(uet_ep->tx_desc);
+		kfree(uet_ep->tx_desc);
 	}
 
 	uet_desc_ring_free(uet_ep);
@@ -1026,7 +1020,7 @@ static void uet_tx_desc_set_err(struct uet_tx_desc *tx_desc, int err_code,
 static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 {
 	uint32_t max_retx;
-	time_t backoff;
+	uint64_t backoff;
 	struct uet_av_entry *av_entry;
 
 	/* check for max retransmits */
@@ -1047,7 +1041,8 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 	uet_gettime(&tx_desc->tx_time);
 	if (delay_retx) {
 		/* exponential backoff */
-		backoff = ((time_t) lrand48()) % (tx_desc->backoff_max + 1);
+		backoff = 
+		 /*((uint64_t) lrand48()) % */(tx_desc->backoff_max + 1);
 		tx_desc->tx_time += backoff;
 	}
 
@@ -1313,7 +1308,7 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 	uet_list_remove(item);
 	uet_rw_unlock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
 
-	free(uet_ep);
+	kfree(uet_ep);
 }
 
 /* free resources associated with all endpoints of a domain */
@@ -1347,7 +1342,7 @@ static void uet_av_entry_free(struct uet_av_entry *av_entry)
 
 	item = &av_entry->av_list_entry;
 	uet_list_remove(item);
-	free(av_entry);
+	kfree(av_entry);
 }
 
 /* free resources associated with all address vector entries of a domain */
@@ -1362,7 +1357,7 @@ static void uet_av_free_all(struct uet_domain *uet_dom)
 					av_list_entry);
 		uet_list_remove(item);
 		item = head;
-		free(av_entry);
+		kfree(av_entry);
 	}
 }
 
@@ -1387,10 +1382,10 @@ static void uet_domain_free(struct uet_domain *uet_dom)
 	item = &uet_dom->domain_list_entry;
 	uet_list_remove(item);
 	if (uet_dom->mr_desc_alloc_cb.state)
-		free(uet_dom->mr_desc_alloc_cb.state);
+		kfree(uet_dom->mr_desc_alloc_cb.state);
 	if (uet_dom->mr_desc)
-		free(uet_dom->mr_desc);
-	free(uet_dom);
+		kfree(uet_dom->mr_desc);
+	kfree(uet_dom);
 }
 
 /* free resources associated with all domains */
@@ -1579,7 +1574,6 @@ static uet_ses_rc_t uet_get_rx_desc(
 	uet_ses_rc_t ses_rc, struct uet_rx_msg_key *msg_key,
 	struct uet_rx_desc **rx_desc, bool *first_msg_pkt, bool *gtd_del)
 {
-	struct uet_mr_key mr_key;
 	struct uet_mr_desc *mr_desc;
 
 	/* lookup rx descriptor for msg */
@@ -1873,9 +1867,9 @@ static uet_ses_rc_t uet_rx_dsend(struct uet_ep *uet_ep,
 				 struct uet_tag_initiator_key *tag_key)
 {
 	int rc;
-	uint16_t allocated_token, msg_id;
+	uint16_t msg_id;
 	uint64_t remote_token;
-	time_t now;
+	uint64_t now;
 	struct uet_instance *uet;
 	struct uet_ses_req_std *ses;
 	struct uet_tx_desc *tx_desc;
@@ -2416,7 +2410,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 {
 	uet_ses_rc_t ses_rc;
 	uint16_t payload_len;
-	uint32_t gen, ep_gen, job_id, resv_payload_len;
+	uint32_t gen, ep_gen, job_id;
 	bool first_msg_pkt;
 	uet_ses_list_t list;
 	struct uet_ep *uet_ep;
@@ -2511,7 +2505,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
 					false, true, gtd_del);
 		if (ses_rc == UET_RC_UNCOR_TRNSNT)
-			ses_nack = true;
+			*ses_nack = true;
 		ep_gen = (uint32_t) uet_ep->untagged_gen;
 		break;
 	case UET_READ:
@@ -2520,7 +2514,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		if (ses_rc != UET_RC_OK) {
 			*gtd_del = true;
 			if (ses_rc == UET_RC_UNCOR_TRNSNT)
-				ses_nack = true;
+				*ses_nack = true;
 		} else if (ack_d_info.valid)
 			goto build_response_w_data;
 		ep_gen = (uint32_t) uet_ep->untagged_gen;
@@ -2828,17 +2822,13 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 				 struct uet_parsed_pkt *rsp_pp)
 {
-	int rc;
 	uint8_t opcode;
 	uint32_t mod_len, rx_gen;
-	size_t msg_len, expected_rd_rsp, max_payload_len;
 	uet_ses_rc_t ses_rc;
 	struct uet_ses_rsp *ses_rsp;
 	struct uet_ses_rsp_d *ses_rsp_d;
-	struct uet_ep *ep;
 	struct uet_tx_desc *tx_desc;
 	struct uet_av_entry *av_entry;
-	union uet_pkt *pkt;
 
 	tx_desc = (struct uet_tx_desc *) tx_pkt_handle;
 	ses_rsp = (struct uet_ses_rsp *) rsp_pp->ses;
@@ -3219,7 +3209,7 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 {
 	int rc;
 	size_t i;
-	time_t now;
+	uint64_t now;
 	struct uet_ring *ring;
 	struct uet_tx_desc *tx_desc, *start_tx_desc;
 	struct uet_av_entry *av_entry;
@@ -3289,10 +3279,10 @@ rotate_and_continue:
 }
 
 /* age out partially received messages that have gone idle */
-static void uet_rx_msg_age(struct uet_ep *uet_ep, time_t now)
+static void uet_rx_msg_age(struct uet_ep *uet_ep, uint64_t now)
 {
 	struct uet_rx_desc *rx_desc;
-	time_t idle_time;
+	uint64_t idle_time;
 
 	while (1) {
 		if (uet_list_empty(&uet_ep->rx_desc_active_list_head))
@@ -3315,10 +3305,10 @@ static void uet_rx_msg_age(struct uet_ep *uet_ep, time_t now)
 }
 
 /* age out deferred send messages that have gone idle */
-static void uet_dsend_msg_age(struct uet_ep *uet_ep, time_t now)
+static void uet_dsend_msg_age(struct uet_ep *uet_ep, uint64_t now)
 {
 	struct uet_tx_desc *tx_desc;
-	time_t idle_time;
+	uint64_t idle_time;
 
 	while (1) {
 		if (uet_list_empty(&uet_ep->tx_desc_defer_list_head))
@@ -3335,11 +3325,11 @@ static void uet_dsend_msg_age(struct uet_ep *uet_ep, time_t now)
 
 /* common code for aging list of rtr messages */
 static void uet_rtr_msg_age_common(struct uet_ep *uet_ep,
-				   struct uet_list_entry *list_head, time_t now)
+				   struct uet_list_entry *list_head, uint64_t now)
 {
 	struct uet_instance *uet;
 	struct uet_tx_desc *tx_desc;
-	time_t idle_time, timeout;
+	uint64_t idle_time, timeout;
 
 	uet = uet_ep->uet_domain->uet;
 	timeout = uet->idle_rtr_msg_timeout;
@@ -3353,14 +3343,14 @@ static void uet_rtr_msg_age_common(struct uet_ep *uet_ep,
 		if (idle_time < timeout)
 			break;
 		uet_tx_desc_buf_rtr_list_remove(tx_desc);
-		uet_dealloc_msg_id(uet, &tx_desc->msg_id);
+		uet_dealloc_msg_id(uet, tx_desc->msg_id);
 		uet_tx_desc_list_insert(tx_desc);
 		UET_API_ERR("Buffered RTR Message Timeout");
 	}
 }
 
 /* age out buffered rtr messages that have gone idle */
-static void uet_rtr_msg_age(struct uet_ep *uet_ep, time_t now)
+static void uet_rtr_msg_age(struct uet_ep *uet_ep, uint64_t now)
 {
 	uet_rtr_msg_age_common(uet_ep,
 			       &uet_ep->tx_desc_buf_rtr_list_head, now);
@@ -3371,7 +3361,7 @@ static void uet_rtr_msg_age(struct uet_ep *uet_ep, time_t now)
 /* age out messages that have gone idle to reclaim stranded resources */
 static void uet_msg_age(struct uet_ep *uet_ep)
 {
-	time_t now;
+	uint64_t now;
 
 	uet_gettime(&now);
 
@@ -3653,9 +3643,9 @@ int uet_initialize_internal(uet_handle_t *handle)
 	int rc;
 	struct uet_instance *uet;
 
-	uet = calloc(1, sizeof(struct uet_instance));
+	uet = kcalloc(1, sizeof(struct uet_instance), GFP_KERNEL);
 	if (uet == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		rc = -ENOMEM;
 		goto err_return;
 	}
@@ -3699,7 +3689,7 @@ int uet_initialize_internal(uet_handle_t *handle)
 
 err_return:
 	if (uet != NULL)
-		free(uet);
+		kfree(uet);
 	return rc;
 }
 
@@ -3709,7 +3699,7 @@ int uet_finalize_internal(uet_handle_t handle)
 
 	uet = (struct uet_instance *) handle;
 	uet_finalize_core(uet);
-	free(uet);
+	kfree(uet);
 
 	return 0;
 }
@@ -3732,7 +3722,7 @@ int uet_get_nic_addr_ipv4_internal(uet_handle_t handle,
 {
 	struct uet_instance *uet;
 	uet = (struct uet_instance *) handle;
-	memcpy(ipv4_addr, uet->nic.ipv4_addr, sizeof(uint32_t));
+	memcpy(ipv4_addr, &uet->nic.ipv4_addr, sizeof(uint32_t));
 	return 0;
 }
 
@@ -3747,9 +3737,9 @@ int uet_domain_internal(uet_handle_t handle, size_t mr_cnt,
 	uet = (struct uet_instance *) handle;
 
 	/* allocate memory for domain object */
-	uet_dom = calloc(1, sizeof(struct uet_domain));
+	uet_dom = kcalloc(1, sizeof(struct uet_domain), GFP_KERNEL);
 	if (uet_dom == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		rc = -ENOMEM;
 		goto err_exit;
 	}
@@ -3766,19 +3756,19 @@ int uet_domain_internal(uet_handle_t handle, size_t mr_cnt,
 		uet_dom->num_mr = mr_cnt;
 	else
 		uet_dom->num_mr = UET_DEF_MR_CNT;
-	uet_dom->mr_desc = calloc(uet_dom->num_mr,
-				 sizeof(struct uet_mr_desc));
+	uet_dom->mr_desc = kcalloc(uet_dom->num_mr,
+				 sizeof(struct uet_mr_desc), GFP_KERNEL);
 	if (uet_dom->mr_desc == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		rc = -ENOMEM;
 		goto err_exit;
 	}
 
 	/* allocate memory for memory region allocation state */
-	uet_dom->mr_desc_alloc_cb.state = calloc(uet_dom->num_mr,
-						 sizeof(uint8_t));
+	uet_dom->mr_desc_alloc_cb.state = kcalloc(uet_dom->num_mr,
+						 sizeof(uint8_t), GFP_KERNEL);
 	if (uet_dom->mr_desc_alloc_cb.state == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		rc = -ENOMEM;
 		goto err_exit;
 	}
@@ -3805,10 +3795,10 @@ int uet_domain_internal(uet_handle_t handle, size_t mr_cnt,
 err_exit:
 	if (uet_dom) {
 		if (uet_dom->mr_desc_alloc_cb.state)
-			free(uet_dom->mr_desc_alloc_cb.state);
+			kfree(uet_dom->mr_desc_alloc_cb.state);
 		if (uet_dom->mr_desc)
-			free(uet_dom->mr_desc);
-		free(uet_dom);
+			kfree(uet_dom->mr_desc);
+		kfree(uet_dom);
 	}
 	return rc;
 }
@@ -3835,7 +3825,7 @@ int uet_domain_close_internal(uet_domain_handle_t domain_handle)
 int uet_endpoint_internal(uet_domain_handle_t domain_handle,
 	void *src_addr, int32_t src_addrlen, int32_t num_rx_desc, 
 	int32_t num_tx_desc, uet_pds_mode_t pds_mode,
-	uint32_t tclass, bool use_default_tos, void *context, 
+	uint32_t tclass, int use_default_tos, void *context, 
 	uet_ep_handle_t *ep_handle)
 {
 	int rc;
@@ -3848,9 +3838,9 @@ int uet_endpoint_internal(uet_domain_handle_t domain_handle,
 	pds = &uet_dom->uet->pds;
 
 	/* allocate memory for ep object */
-	uet_ep = calloc(1, sizeof(struct uet_ep));
+	uet_ep = kcalloc(1, sizeof(struct uet_ep), GFP_KERNEL);
 	if (uet_ep == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		rc = -ENOMEM;
 		goto err_exit;
 	}
@@ -3865,10 +3855,10 @@ int uet_endpoint_internal(uet_domain_handle_t domain_handle,
 	uet_ep->ipv4_addr = uet_ep->uet_addr.fa.v4;
 
 	uet_ep->num_rx_desc = num_rx_desc;
-	uet_ep->rx_desc = calloc(uet_ep->num_rx_desc,
-				 sizeof(struct uet_rx_desc));
+	uet_ep->rx_desc = kcalloc(uet_ep->num_rx_desc,
+				 sizeof(struct uet_rx_desc), GFP_KERNEL);
 	if (uet_ep->rx_desc == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		rc = -ENOMEM;
 		goto err_exit;
 	}
@@ -3883,10 +3873,10 @@ int uet_endpoint_internal(uet_domain_handle_t domain_handle,
 	}
 
 	uet_ep->num_tx_desc = num_tx_desc;
-	uet_ep->tx_desc = calloc(uet_ep->num_tx_desc,
-				 sizeof(struct uet_tx_desc));
+	uet_ep->tx_desc = kcalloc(uet_ep->num_tx_desc,
+				 sizeof(struct uet_tx_desc), GFP_KERNEL);
 	if (uet_ep->tx_desc == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		rc = -ENOMEM;
 		goto err_exit;
 	}
@@ -3945,7 +3935,7 @@ int uet_endpoint_internal(uet_domain_handle_t domain_handle,
 err_exit:
 	if (uet_ep) {
 		uet_desc_free(uet_ep);
-		free(uet_ep);
+		kfree(uet_ep);
 	}
 	return rc;
 }
@@ -4183,9 +4173,9 @@ int uet_av_insert_internal(uet_domain_handle_t domain_handle,
 	}
 
 	/* allocate memory for av object */
-	av_entry = calloc(1, sizeof(struct uet_av_entry));
+	av_entry = kcalloc(1, sizeof(struct uet_av_entry), GFP_KERNEL);
 	if (av_entry == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
+		UET_API_PRINT_ERRNO("kcalloc");
 		return -ENOMEM;
 	}
 

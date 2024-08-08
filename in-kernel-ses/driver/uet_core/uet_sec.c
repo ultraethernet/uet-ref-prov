@@ -3,12 +3,8 @@
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
+#include <linux/stddef.h>
+#include <linux/kstrtox.h>
 
 //#include "uet_api_private.h"
 #include "uet_pkt_hdr.h"
@@ -56,6 +52,50 @@ static struct uet_sec_sd sdkdb[UET_SEC_MAX_SD];
 
 static char *uet_sec_label1 = "UE1";
 static char *uet_sec_label2 = "UE2";
+
+void (*uet_gcm_init)(struct gcm_context *ctx);
+
+int (*uet_gcm_auth_decrypt)(struct gcm_context *ctx,
+		     size_t length,
+		     const uint8_t *iv,
+		     size_t iv_len,
+		     const uint8_t *aad,
+		     size_t aad_len,
+		     const uint8_t *tag,
+		     size_t tag_len,
+		     const uint8_t *input,
+		     uint8_t *output);
+
+int (*uet_gcm_crypt_and_tag)(struct gcm_context *ctx,
+		      int mode,
+		      size_t length,
+		      const uint8_t *iv,
+		      size_t iv_len,
+		      const uint8_t *aad,
+		      size_t aad_len,
+		      const uint8_t *input,
+		      uint8_t *output,
+		      size_t tag_len,
+		      uint8_t *tag);
+
+int (*uet_gcm_setkey)(struct gcm_context *ctx,
+	       const uint8_t *key,
+	       uint32_t keybits);
+
+void (*uet_kdf_ctr_cmac_aes)(uint8_t *key,
+		      uint32_t keybits,
+		      uint32_t ctr_len,
+		      uint8_t *label,
+		      uint32_t label_len,
+		      uint8_t *context,
+		      uint32_t context_len,
+		      uint8_t *key_out,
+		      uint32_t keybits_out);
+
+EXPORT_SYMBOL(uet_gcm_init);
+EXPORT_SYMBOL(uet_gcm_auth_decrypt);
+EXPORT_SYMBOL(uet_gcm_crypt_and_tag);
+EXPORT_SYMBOL(uet_gcm_setkey);
 
 /**************************************************************************/
 /* FIXME: Default fields used for the fixed SD... not yet configurable!   */
@@ -179,16 +219,16 @@ int uet_sec_build_hdr(uint32_t sdi,
 	else
 		sec->an_sdi = htonl((sd->an << UET_SEC_AN_SHIFT) | sd->sdi);
 
-	uet_gettime((time_t *)&tsc);
+	uet_gettime((uint64_t *)&tsc);
 
 	if (sd->use_ssi) {
 		sec_ssi->entropy = *((uint16_t *)(sec_ssi + 1));
 		if (sd->mode == UET_SEC_MODE_SERVER) {
 			/* for server mode the client SSI is always used */
-			if (getenv(UET_SEC_SERVER)) {
-				client_ssi = getenv(UET_SEC_CLIENT_SSI);
-				sec_ssi->ssi = htonl(strtoul(client_ssi,
-							     NULL, 10));
+			if (NULL /* FIXME: getenv(UET_SEC_SERVER) */) {
+				client_ssi = NULL /* FIXME: getenv(UET_SEC_CLIENT_SSI) */;
+				sec_ssi->ssi = htonl(kstrtoul(client_ssi,
+							     10, NULL));
 			} else {
 				sec_ssi->ssi = htonl(ssi);
 			}
@@ -224,7 +264,7 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt)
 		return -EINVAL;
 	}
 
-	uet_gettime((time_t *)&tsc);
+	uet_gettime((uint64_t *)&tsc);
 
 	if (ntohs(sec->type_next_flags) & UET_SEC_SP_MASK)
 		sec_ssi->tsc = htonll(tsc);
@@ -333,7 +373,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
 		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
 
-		kdf_ctr_cmac_aes(sd->key[an],
+		uet_kdf_ctr_cmac_aes(sd->key[an],
 				 (UET_SEC_KEY_SIZE * 8),
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label1,
@@ -345,7 +385,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 		break;
 
 	case UET_SEC_MODE_SERVER:
-		if (!getenv(UET_SEC_SERVER)) {
+		if (!NULL /* FIXME: getenv(UET_SEC_SERVER) */) {
 			memcpy(derived_key, sd->key[an], UET_SEC_KEY_SIZE);
 			break;
 		}
@@ -354,7 +394,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
 		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
 
-		kdf_ctr_cmac_aes(sd->key[sd->an],
+		uet_kdf_ctr_cmac_aes(sd->key[sd->an],
 				 (UET_SEC_KEY_SIZE * 8),
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label1,
@@ -371,7 +411,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 		tmp_val = htonl(sdi);
 		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
 
-		kdf_ctr_cmac_aes(fep_key[an],
+		uet_kdf_ctr_cmac_aes(fep_key[an],
 				 (UET_SEC_KEY_SIZE * 8),
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label2,
@@ -400,9 +440,9 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 	clrtxt_len = ((sec_hdr + sd->coff) - pkt);
 	memcpy(enc_out, pkt, clrtxt_len);
 
-	gcm_init(&gcm);
-	gcm_setkey(&gcm, derived_key, (UET_SEC_KEY_SIZE * 8));
-	rc = gcm_crypt_and_tag(&gcm,
+	uet_gcm_init(&gcm);
+	uet_gcm_setkey(&gcm, derived_key, (UET_SEC_KEY_SIZE * 8));
+	rc = uet_gcm_crypt_and_tag(&gcm,
 			       GCM_ENCRYPT,
 			       (pkt_len - clrtxt_len),
 			       iv,
@@ -508,7 +548,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
 		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
 
-		kdf_ctr_cmac_aes(sd->key[an],
+		uet_kdf_ctr_cmac_aes(sd->key[an],
 				 (UET_SEC_KEY_SIZE * 8),
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label1,
@@ -520,7 +560,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 		break;
 
 	case UET_SEC_MODE_SERVER:
-		if (!getenv(UET_SEC_SERVER)) {
+		if (!NULL /* FIXME: getenv(UET_SEC_SERVER) */) {
 			memcpy(derived_key, sd->key[an], UET_SEC_KEY_SIZE);
 			break;
 		}
@@ -529,7 +569,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
 		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
 
-		kdf_ctr_cmac_aes(sd->key[sd->an],
+		uet_kdf_ctr_cmac_aes(sd->key[sd->an],
 				 (UET_SEC_KEY_SIZE * 8),
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label1,
@@ -546,7 +586,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 		tmp_val = htonl(sdi);
 		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
 
-		kdf_ctr_cmac_aes(fep_key[an],
+		uet_kdf_ctr_cmac_aes(fep_key[an],
 				 (UET_SEC_KEY_SIZE * 8),
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label2,
@@ -574,9 +614,9 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 
 	clrtxt_len = ((sec_hdr + sd->coff) - pkt);
 
-	gcm_init(&gcm);
-	gcm_setkey(&gcm, derived_key, (UET_SEC_KEY_SIZE * 8));
-	rc = gcm_auth_decrypt(&gcm,
+	uet_gcm_init(&gcm);
+	uet_gcm_setkey(&gcm, derived_key, (UET_SEC_KEY_SIZE * 8));
+	rc = uet_gcm_auth_decrypt(&gcm,
 			      (pkt_len - clrtxt_len - UET_SEC_TAG_LEN),
 			      iv,
 			      UET_SEC_IV_SIZE,
@@ -630,20 +670,20 @@ static int uet_sec_init_sd(uint32_t sdi,
 	memcpy(sd->key, def_key, sizeof(def_key));
 
 	/* for client side of server mode, do KDFs now */
-	if ((mode == UET_SEC_MODE_SERVER) && !getenv(UET_SEC_SERVER)) {
+	if ((mode == UET_SEC_MODE_SERVER) && !NULL /* FIXME: getenv(UET_SEC_SERVER) */) {
 		/* FIXME: support both SSI and source IP for server mode */
-		if (!getenv(UET_SEC_SSI)) {
+		if (!NULL /* FIXME: getenv(UET_SEC_SSI) */) {
 			UET_USP_ERR("server mode requires SSI\n");
 			memset(sd, 0, sizeof(*sd));
 			return -EINVAL;
 		}
 
 		memset(small_context, 0, sizeof(small_context));
-		client_ssi = getenv(UET_SEC_SSI);
-		tmp_val = htonl(strtoul(client_ssi, NULL, 10));
+		client_ssi = NULL /* FIXME: getenv(UET_SEC_SSI) */;
+		tmp_val = htonl(kstrtoul(client_ssi, 10, NULL));
 		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
 
-		kdf_ctr_cmac_aes(sd->key[0],
+		uet_kdf_ctr_cmac_aes(sd->key[0],
 				 (UET_SEC_KEY_SIZE * 8),
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label1,
@@ -655,7 +695,7 @@ static int uet_sec_init_sd(uint32_t sdi,
 
 		memcpy(sd->key[0], derived_key, UET_SEC_KEY_SIZE);
 
-		kdf_ctr_cmac_aes(sd->key[1],
+		uet_kdf_ctr_cmac_aes(sd->key[1],
 				 (UET_SEC_KEY_SIZE * 8),
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label1,
@@ -681,8 +721,8 @@ int uet_sec_init(void)
 	for (i = 0; i < UET_SEC_MAX_SD; i++)
 		sdkdb[i].enabled = false;
 
-	sec_mode = getenv(UET_SEC_MODE);
-	sec_ssi  = getenv(UET_SEC_SSI);
+	sec_mode = NULL /* FIXME: getenv(UET_SEC_MODE) */;
+	sec_ssi  = NULL /* FIXME: getenv(UET_SEC_SSI) */;
 
 	if (sec_mode == NULL)
 		return 0;
@@ -706,7 +746,7 @@ int uet_sec_init(void)
 			return -EINVAL;
 		}
 
-		if (getenv(UET_SEC_SERVER) && !getenv(UET_SEC_CLIENT_SSI)) {
+		if (NULL /* FIXME: getenv(UET_SEC_SERVER) */ && !NULL /* FIXME: getenv(UET_SEC_CLIENT_SSI) */) {
 			UET_USP_ERR("UET_SEC_CLIENT_SSI required on server "
 				    "for server mode");
 			return -EINVAL;

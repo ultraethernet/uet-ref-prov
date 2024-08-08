@@ -71,32 +71,32 @@
 #define UET_ERR_CLR  UET_CLR_RED
 
 #define UET_LOG(fmt, clr, ...)  \
-	printf("%s" fmt "%s\n", \
+	pr_info("%s" fmt "%s\n", \
 	       (clr),           \
 	       ##__VA_ARGS__,   \
 	       UET_CLR_NORMAL)
 
 #define UET_DBG(fmt, clr, ...)       \
-	printf("%sDBG: " fmt "%s\n", \
+	pr_info("%sDBG: " fmt "%s\n", \
 	       (clr),                \
 	       ##__VA_ARGS__,        \
 	       UET_CLR_NORMAL)
 
 #define UET_INFO(fmt, clr, ...)       \
-	printf("%sINFO: " fmt "%s\n", \
+	pr_info("%sINFO: " fmt "%s\n", \
 	       (clr),                 \
 	       ##__VA_ARGS__,         \
 	       UET_CLR_NORMAL)
 
 #define UET_WARN(fmt, ...)                    \
-	printf("%s[%s:%d] WARN: " fmt "%s\n", \
+	pr_warn("%s[%s:%d] WARN: " fmt "%s\n", \
 	       UET_WARN_CLR,                  \
 	       __FILE__, __LINE__,            \
 	       ##__VA_ARGS__,                 \
 	       UET_CLR_NORMAL)
 
 #define UET_ERR(fmt, ...)                      \
-	printf("%s[%s:%d] ERROR: " fmt "%s\n", \
+	pr_err("%s[%s:%d] ERROR: " fmt "%s\n", \
 	       UET_ERR_CLR,                    \
 	       __FILE__, __LINE__,             \
 	       ##__VA_ARGS__,                  \

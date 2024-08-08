@@ -33,7 +33,7 @@
 #define UET_API_DEBUG(fmt, ...)                                              \
 	do {                                                                 \
 		if (UET_API_DEBUG_ENABLED)                                   \
-			fprintf(stderr, "UET API: [%s] %s:%-4d: " fmt "\n",  \
+			fprintf(stdout, "UET API: [%s] %s:%-4d: " fmt "\n",  \
 				"error", __FILE__, __LINE__, ##__VA_ARGS__); \
 	} while (0)
 

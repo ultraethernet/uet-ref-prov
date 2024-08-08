@@ -26,9 +26,6 @@
 #ifndef _GCM_H_
 #define _GCM_H_
 
-#include <stdint.h>
-#include <stdlib.h>
-#include <stdbool.h>
 #include "aes.h"
 
 #define GCM_ENCRYPT 1
