@@ -36,6 +36,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <time.h>
+#include <sys/ioctl.h>
 
 #include "uet_api.h"
 
@@ -69,6 +70,33 @@ static int uet_nic_close(struct fid *fid)
  * Below functions implement UET APIs
  *********************************************************************/
 
+int g_uet_dev_fd = -1;
+
+static int uet_initialize_internal(uet_handle_t *handle)
+{
+	int rc;
+	char *filename = getenv("UET_CHAR_DEV");
+	struct uet_ioctl_inst_init_args args;
+
+	if (filename == NULL)
+		filename = "/dev/uet";
+
+	g_uet_dev_fd = open(filename, O_RDWR);
+	if (g_uet_dev_fd == -1) {
+		UET_API_PRINT_ERRNO(__func__);
+		return -1;
+	}
+
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_INSTANCE_CREATE, &args);
+	if (rc < 0) {
+		UET_API_PRINT_ERRNO(__func__);
+		return -1;
+	}
+	*handle = args.out.handle;
+
+	return 0;
+}
+
 int uet_initialize(uet_handle_t *handle)
 {
 	int rc;
@@ -76,9 +104,51 @@ int uet_initialize(uet_handle_t *handle)
 	return uet_initialize_internal(handle);
 }
 
+static void uet_finalize_internal(uet_handle_t *handle)
+{
+	close(g_uet_dev_fd);
+}
+
 int uet_finalize(uet_handle_t handle)
 {
 	uet_finalize_internal(handle);
+	return 0;
+}
+
+static int 
+uet_get_nic_addr_ipv4_internal(uet_handle_t handle, 
+		uint32_t *ipv4_addr)
+{
+	int rc;
+	struct uet_ioctl_nic_get_addr_ipv4 args;
+
+	args.in.handle = handle;
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_NIC_GET_ADDR_IPV4, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO(__func__);
+		return -1;
+	}
+
+	memcpy(ipv4_addr, &args.out.ipv4_addr, sizeof(uint32_t));
+
+	return 0;
+}
+
+static int uet_nic_getinfo_internal(uet_handle_t handle,
+		struct uet_nic_info *nic_info)
+{
+	int rc;
+	struct uet_ioctl_nic_getinfo_args args;
+
+	args.in.handle = handle;
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_NIC_GET_INFO, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO(__func__);
+		return -1;
+	}
+
+	memcpy(nic_info, &args.out.nic_info, sizeof(struct uet_nic_info));
+
 	return 0;
 }
 
@@ -210,6 +280,28 @@ err_return:
 	return rc;
 }
 
+static int uet_domain_internal(uet_handle_t handle,
+		size_t mr_cnt, int mr_mode, unsigned long context,
+		uet_domain_handle_t *domain_handle)
+{
+	int rc;
+	struct uet_ioctl_domain_create_args args;
+
+	args.in.handle = handle;
+	args.in.mr_cnt = mr_cnt;
+	args.in.mr_mode = mr_mode;
+	args.in.context = context;
+
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_DOMAIN_CREATE, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+	*domain_handle = args.out.domain_handle;
+
+	return 0;
+}
+
 int uet_domain(uet_handle_t handle, struct fid_fabric *fabric,
 	       struct fi_info *info, struct fid_domain *domain,
 	       void *context, uet_eq_callback_t eq_callback,
@@ -245,11 +337,48 @@ err_exit:
 	return rc;
 }
 
+static int uet_domain_close_internal(uet_domain_handle_t domain_handle)
+{
+	struct uet_ioctl_domain_close_args args;
+
+	args.in.domain_handle = domain_handle;
+	return ioctl(g_uet_dev_fd, UET_IOCTL_DOMAIN_CREATE, &args);
+}
+
 int uet_domain_close(uet_domain_handle_t domain_handle)
 {
 	return uet_domain_close_internal(domain_handle);
 }
 
+static int uet_endpoint_internal(uet_domain_handle_t domain_handle,
+		struct uet_addr *src_addr, int32_t src_addrlen, 
+		int32_t num_rx_desc, int32_t num_tx_desc, 
+		uet_pds_mode_t pds_mode, uint32_t tclass, int use_default_tos,
+		unsigned long context, uet_ep_handle_t *ep_handle)
+{
+	int rc;
+	struct uet_ioctl_ep_create_args args;
+
+	args.in.domain_handle = domain_handle;
+	memcpy(&args.in.src_addr, src_addr, sizeof(struct uet_addr));
+	args.in.src_addrlen = src_addrlen;
+	args.in.num_rx_desc = num_rx_desc;
+	args.in.num_tx_desc = num_tx_desc;
+	args.in.pds_mode = pds_mode;
+	args.in.tclass = tclass;
+	args.in.use_default_tos = use_default_tos;
+	args.in.context = context;
+
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_EP_CREATE, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	*ep_handle = args.out.ep_handle;
+
+	return 0;
+}
 
 int uet_endpoint(uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
@@ -287,9 +416,51 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 
 }
 
+static int uet_getname_internal(uet_ep_handle_t ep_handle,
+		struct uet_addr *uet_addr)
+{
+	int rc;
+	struct uet_ioctl_ep_get_name_args args;
+
+	args.in.ep_handle = ep_handle;
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_EP_GET_NAME, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	memcpy(uet_addr, &args.out.uet_addr, sizeof(struct uet_addr));
+
+	return 0;
+}
+
 int uet_getname(uet_ep_handle_t ep_handle, struct uet_addr *uet_addr)
 {
 	return uet_getname_internal(ep_handle, uet_addr);
+}
+
+static int uet_ep_bind_cq_internal(uet_ep_handle_t ep_handle,
+		uint64_t cq_flags, enum uet_cq_type cq_type, size_t cq_size,
+		unsigned long context, uet_cq_handle_t *cq_handle)
+{
+	int rc;
+	struct uet_ioctl_ep_bind_cq_args args;
+
+	args.in.ep_handle = ep_handle;
+	args.in.cq_flags = cq_flags;
+	args.in.cq_type = cq_type;
+	args.in.cq_size = cq_size;
+	args.in.context = context;
+
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_EP_BIND_CQ, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	*cq_handle = args.out.cq_handle;
+
+	return 0;
 }
 
 int uet_ep_bind_cq(uet_ep_handle_t ep_handle, struct fi_cq_attr *attr,
@@ -350,14 +521,58 @@ int uet_ep_bind_cq(uet_ep_handle_t ep_handle, struct fi_cq_attr *attr,
 		cq_size, context, cq_handle);
 }
 
+static int uet_ep_enable_internal(uet_ep_handle_t ep_handle)
+{
+	struct uet_ioctl_ep_enable_args args;
+
+	args.in.ep_handle = ep_handle;
+	return ioctl(g_uet_dev_fd, UET_IOCTL_EP_ENABLE, &args);
+}
+
 int uet_ep_enable(uet_ep_handle_t ep_handle)
 {
 	return uet_ep_enable_internal(ep_handle);
 }
 
+static int uet_ep_close_internal(uet_ep_handle_t ep_handle)
+{
+	struct uet_ioctl_ep_close_args args;
+
+	args.in.ep_handle = ep_handle;
+	return ioctl(g_uet_dev_fd, UET_IOCTL_EP_CLOSE, &args);
+}
+
 int uet_ep_close(uet_ep_handle_t ep_handle)
 {
 	return uet_ep_close_internal(ep_handle);
+}
+
+static int uet_cq_read_internal(uet_cq_handle_t cq_handle, 
+		void *buf, size_t count)
+{
+	int rc;
+	struct uet_ioctl_cq_read_args *args = 
+		malloc(sizeof(struct uet_ioctl_cq_read_args) + 
+				count * sizeof(struct uet_cq_entry));
+
+	if (args == NULL)
+		return -ENOMEM;
+
+	args->in.cq_handle = cq_handle;
+	args->in.max_count = count;
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_CQ_READ, args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	memcpy(buf, args->out.buf, 
+			args->out.count * sizeof(struct uet_cq_entry));
+
+	count = args->out.count;
+	free(args);
+
+	return count;
 }
 
 ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
@@ -409,6 +624,24 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 	return rd_count;
 }
 
+static ssize_t uet_cq_readerr_internal(uet_cq_handle_t cq_handle, 
+		struct uet_cq_entry *err_entry)
+{
+	int rc;
+	struct uet_ioctl_cq_readerr_args args;
+
+	args.in.cq_handle = cq_handle;
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_CQ_READERR, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	memcpy(err_entry, &args.out.buf, sizeof(struct uet_cq_entry));
+
+	return args.out.count;
+}
+
 ssize_t uet_cq_readerr(uet_cq_handle_t cq_handle,
 			struct fi_cq_err_entry *buf)
 {
@@ -423,10 +656,36 @@ ssize_t uet_cq_readerr(uet_cq_handle_t cq_handle,
 	return ret;
 }
 
+static int uet_cq_close_internal(uet_cq_handle_t cq_handle)
+{
+	struct uet_ioctl_cq_close_args args;
+
+	args.in.cq_handle = cq_handle;
+	return ioctl(g_uet_dev_fd, UET_IOCTL_CQ_CLOSE, &args);
+}
 
 int uet_cq_close(uet_cq_handle_t cq_handle)
 {
 	return uet_cq_close_internal(cq_handle);
+}
+
+static int uet_av_insert_internal(uet_domain_handle_t domain_handle,
+		struct uet_addr *uet_addr, uet_addr_handle_t *addr_handle)
+{
+	int rc;
+	struct uet_ioctl_av_insert_args args;
+
+	args.in.domain_handle = domain_handle;
+	memcpy(&args.in.uet_addr, uet_addr, sizeof(struct uet_addr));
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_AV_INSERT, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	*addr_handle = args.out.addr_handle;
+
+	return 0;
 }
 
 int uet_av_insert(uet_domain_handle_t domain_handle, 
@@ -435,9 +694,46 @@ int uet_av_insert(uet_domain_handle_t domain_handle,
 	return uet_av_insert_internal(domain_handle, uet_addr, addr_handle);
 }
 
+static int uet_av_remove_internal(uet_addr_handle_t addr_handle)
+{
+	struct uet_ioctl_av_remove_args args;
+
+	args.in.addr_handle = addr_handle;
+	return ioctl(g_uet_dev_fd, UET_IOCTL_AV_REMOVE, &args);
+}
+
 int uet_av_remove(uet_addr_handle_t addr_handle)
 {
 	return uet_av_remove_internal(addr_handle);
+}
+
+static ssize_t uet_recv_api_common(uet_recv_api_t recv_api,
+		uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
+		size_t len, uet_mr_handle_t mr_handle, 
+		uet_addr_handle_t src_addr_handle, uint64_t tag,
+		uint64_t ignore, unsigned long context)
+{
+	int rc;
+	struct uet_ioctl_recv_api_args args;
+
+	args.in.recv_api = recv_api;
+	args.in.ep_handle = ep_handle;
+	args.in.job_id = job_id;
+	args.in.buf = buf;
+	args.in.len = len;
+	args.in.mr_handle = mr_handle;
+	args.in.src_addr_handle = src_addr_handle;
+	args.in.tag = tag;
+	args.in.ignore = ignore;
+	args.in.context = context;
+
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_REQ_RECV, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	return args.out.rc;
 }
 
 ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_id,
@@ -447,6 +743,37 @@ ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_id,
 	return (uet_recv_api_common(UET_RECV_API, ep_handle, job_id, buf, len,
 				    mr_handle, src_addr_handle, UET_NO_TAG,
 				    UET_NO_IGNORE_BITS, context));
+}
+
+static ssize_t uet_send_req_api_common(uet_send_req_api_t send_req_api,
+		uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
+		size_t len, uet_mr_handle_t mr_handle, 
+		uet_addr_handle_t dst_addr_handle, uint64_t tag, uint64_t *imm_data,
+		uint64_t remote_mem_addr, uint64_t remote_key, unsigned long context)
+{
+	int rc;
+	struct uet_ioctl_send_req_args args;
+
+	args.in.send_req_api = send_req_api;
+	args.in.ep_handle = ep_handle;
+	args.in.job_id = job_id;
+	args.in.buf = buf;
+	args.in.len = len;
+	args.in.mr_handle = mr_handle;
+	args.in.dst_addr_handle = dst_addr_handle;
+	args.in.tag = tag;
+	args.in.imm_data = imm_data;
+	args.in.remote_mem_addr = remote_mem_addr;
+	args.in.remote_key = remote_key;
+	args.in.context = context;
+
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_REQ_SEND, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	return args.out.rc;
 }
 
 ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
@@ -499,6 +826,31 @@ uint64_t uet_mr_format_key(uint64_t rkey, bool idempotent_safe)
 	return formatted_key;
 }
 
+static int uet_mr_reg_internal(uet_domain_handle_t domain_handle,
+		void *buf, size_t len, uint64_t access, uint64_t requested_key,
+		uint64_t flags, unsigned long context, uet_mr_handle_t *mr_handle)
+{
+	int rc;
+	struct uet_ioctl_mr_reg_args args;
+
+	args.in.domain_handle = domain_handle;
+	args.in.buf = buf;
+	args.in.len = len;
+	args.in.access = access;
+	args.in.requested_key = requested_key;
+	args.in.flags = flags;
+	args.in.context = context;
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_MR_REG, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	*mr_handle = args.out.mr_handle;
+
+	return 0;
+}
+
 int uet_mr_reg(uet_domain_handle_t domain_handle, void *buf, size_t len,
 	       uint64_t access, uint64_t requested_key, uint64_t flags,
 	       void *context, uet_mr_handle_t *mr_handle)
@@ -530,9 +882,34 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, void *buf, size_t len,
 			requested_key, flags, context, mr_handle);
 }
 
+static uint64_t uet_mr_key_internal(uet_mr_handle_t mr_handle)
+{
+	int rc;
+	struct uet_ioctl_mr_key_args args;
+
+	args.in.mr_handle = mr_handle;
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_MR_KEY, &args);
+	if (rc) {
+		UET_API_PRINT_ERRNO("ioctl");
+		return -1;
+	}
+
+	return args.out.mr_key;
+}
+
 uint64_t uet_mr_key(uet_mr_handle_t mr_handle)
 {
 	return uet_mr_key_internal(mr_handle);
+}
+
+static int uet_ep_bind_mr_internal(uet_ep_handle_t ep_handle,
+		uet_mr_handle_t mr_handle)
+{
+	struct uet_ioctl_ep_bind_mr_args args;
+
+	args.in.ep_handle = ep_handle;
+	args.in.mr_handle = mr_handle;
+	return ioctl(g_uet_dev_fd, UET_IOCTL_MR_BIND_EP, &args);
 }
 
 int uet_ep_bind_mr(uet_ep_handle_t ep_handle,
@@ -541,9 +918,25 @@ int uet_ep_bind_mr(uet_ep_handle_t ep_handle,
 	return uet_ep_bind_mr_internal(ep_handle, mr_handle);
 }
 
+static int uet_mr_enable_internal(uet_mr_handle_t mr_handle)
+{
+	struct uet_ioctl_mr_enable_args args;
+
+	args.in.mr_handle = mr_handle;
+	return ioctl(g_uet_dev_fd, UET_IOCTL_MR_ENABLE, &args);
+}
+
 int uet_mr_enable(uet_mr_handle_t mr_handle)
 {
 	return uet_mr_enable_internal(mr_handle);
+}
+
+static int uet_mr_close_internal(uet_mr_handle_t mr_handle)
+{
+	struct uet_ioctl_mr_close_args args;
+
+	args.in.mr_handle = mr_handle;
+	return ioctl(g_uet_dev_fd, UET_IOCTL_MR_CLOSE, &args);
 }
 
 int uet_mr_close(uet_mr_handle_t mr_handle)

@@ -369,6 +369,7 @@ struct uet_ioctl_ep_close_args {
 struct uet_ioctl_cq_read_args {
 	struct {
 		uet_cq_handle_t cq_handle;
+		size_t max_count;
 	} in;
 	struct {
 		int rc;
@@ -420,7 +421,7 @@ struct uet_ioctl_av_remove_args {
 struct uet_ioctl_mr_reg_args {
 	struct {
 		uet_domain_handle_t domain_handle;
-		void __user *buf;
+		void *buf;
 		size_t len;
 		uint64_t access;
 		uint64_t requested_key;
@@ -476,12 +477,12 @@ struct uet_ioctl_send_req_args {
 		uet_send_req_api_t send_req_api;
 		uet_ep_handle_t ep_handle;
 		uint32_t job_id;
-		void __user *buf;
+		void *buf;
 		size_t len;
 		uet_mr_handle_t mr_handle;
 		uet_addr_handle_t dst_addr_handle;
 		uint64_t tag;
-		uint64_t __user *imm_data;
+		uint64_t *imm_data;
 		uint64_t remote_mem_addr;
 		uint64_t remote_key;
 		unsigned long context;
@@ -496,7 +497,7 @@ struct uet_ioctl_recv_api_args {
 		uet_recv_api_t recv_api;
 		uet_ep_handle_t ep_handle;
 		uint32_t job_id;
-		void __user *buf;
+		void *buf;
 		size_t len;
 		uet_mr_handle_t mr_handle;
 		uet_addr_handle_t src_addr_handle;

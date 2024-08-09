@@ -848,6 +848,9 @@ static int uet_init(void)
 		goto fail;
 	}
 
+	pr_info("uet: uet major: %d minor: %d\n", 
+			MAJOR(devno), MINOR(devno));
+
 	uet_setup_cdev();
 
 	pr_info("uet: module loaded\n");

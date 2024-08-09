@@ -1441,4 +1441,52 @@ int uet_query_atomic(uet_domain_handle_t domain_handle,
 		     enum fi_datatype datatype, enum fi_op op,
 		     struct fi_atomic_attr *attr, uint64_t flags);
 
+static inline void 
+uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str)
+{
+	uint32_t net_order;
+
+	net_order = htonl(ipv4_addr);
+	inet_ntop(AF_INET, (char *) &net_order, ipv4_addr_str, 
+			INET_ADDRSTRLEN);
+}
+
+#define UET_MSEC_PER_SEC  1000
+#define UET_NSEC_PER_MSEC 1000000
+
+static inline int uet_gettime(time_t *time_ms)
+{
+	struct timespec s;
+
+	if (clock_gettime(CLOCK_REALTIME, &s)) {
+		*time_ms = 0;
+		return -1;
+	}
+
+	*time_ms = ((time_t) (s.tv_sec  * UET_MSEC_PER_SEC)) +
+		   ((time_t) (s.tv_nsec / UET_NSEC_PER_MSEC));
+	return 0;
+}
+
+static inline void uet_print_uet_addr(struct uet_addr *uet_addr)
+{
+	char ip_addr_str[INET_ADDRSTRLEN];
+
+	uet_ipv4_addr_to_str(uet_addr->fa.v4, ip_addr_str);
+
+	printf("UET Address\n");
+	printf("  IP Address:      %s\n", ip_addr_str);
+	printf("  PIDonFEP:        %u\n", uet_addr->pid_on_fep);
+	printf("  Index:           %u\n", uet_addr->start_index);
+	printf("  Initiator ID:    %u\n", uet_addr->initiator_id);
+	printf("  Profiles:      ");
+	if (uet_addr->fep_cap & UET_FEP_CAP_AI_MIN)
+		printf("  AI Min");
+	if (uet_addr->fep_cap & UET_FEP_CAP_AI_FULL)
+		printf("  AI Full");
+	if (uet_addr->fep_cap & UET_FEP_CAP_HPC)
+		printf("  HPC");
+	printf("\n");
+}
+
 #endif /* _UET_API_H_ */
