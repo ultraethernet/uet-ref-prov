@@ -1,13 +1,19 @@
 
-SUBDIRS = uet_core uet_crypto uet_nic uet_utils
+KDIR ?= /lib/modules/`uname -r`/build
+MDIR ?= ${PWD}
+
+obj-m += uet_core.o
+obj-m += uet_pds_gen.o
+
+uet_core-y := uet_core/uet_core_main.o uet_core/uet_api_private.o uet_core/uet_nic.o uet_core/uet_pds_init.o
+
+uet_pds_gen-y := uet_pds/pds/uet_pds.o uet_pds/common/uet_sec.o uet_utils/bitmap.o
+
+ccflags-y := -Wall -Wno-unused-variable -Wno-implicit-fallthrough -I$(MDIR)/uet_core -I$(MDIR)/uet_utils -I$(MDIR)/uet_crypto -I$(MDIR)/uet_pds/common -I$(MDIR)/uet_pds/pds -I$(MDIR)/include
 
 all:
-	for dir in $(SUBDIRS) ; do \
-		make -C $$dir all ; \
-	done
+	make -C $(KDIR) M=$(MDIR) modules
 
 clean:
-	for dir in $(SUBDIRS) ; do \
-		make -C $$dir clean ; \
-	done
+	make -C $(KDIR) M=$(MDIR) clean
 

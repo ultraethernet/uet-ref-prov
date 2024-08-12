@@ -3,11 +3,13 @@
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
-#include <stdint.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
+#include <linux/types.h>
+#include <linux/kstrtox.h>
+#include <asm-generic/errno-base.h>
+#include <linux/if_ether.h>
+#include <linux/ipv6.h>
+#include <linux/udp.h>
+#include <linux/ip.h>
 
 #include "uthash.h"
 
@@ -48,7 +50,7 @@ struct uet_pdc_pkt {
 	int                   pkt_buf_len;
 	uint8_t              *pkt;
 	int                   pkt_len;
-	time_t                tx_time; /* tx time for detecting timeout */
+	uint64_t                tx_time; /* tx time for detecting timeout */
 	int                   tx_retry_cnt;  /* number of retransmissions */
 	uet_pkt_handle_t      tx_pkt_handle;
 	bool                  tx_pkt_acked; /* this packet has been acked */
@@ -131,7 +133,7 @@ static struct uet_pds_state pds_state;
 	do {                                              \
 		if (pds_state.ready != true) {            \
 			UET_PDS_ERR("PDS is not ready!"); \
-			exit(1);                          \
+			BUG_ON(1);                          \
 		}                                         \
 	} while (0)
 
@@ -179,6 +181,32 @@ static struct uet_pds_state pds_state;
 		    (msg),                                       \
 		    (pp)->pkt_len)
 
+//#define UET_PDS_PKT_HDR_TRACE_ENABLED
+
+#ifdef UET_PDS_PKT_HDR_TRACE_ENABLED
+#define UET_PDS_PKT_HDR_TRACE(UET, PP, PKT, PKT_LEN, MSG)            \
+	do {                                                         \
+		struct uet_parsed_pkt _pp;                           \
+		if ((PP) == NULL) {                                  \
+			if (uet_parse_pkt((PKT),                     \
+					  (PKT_LEN), &_pp,           \
+					  (UET)->uet_udp_port,       \
+					  (UET)->max_payload_len) == \
+			    0) {                                     \
+				printf("\n%s\n\n", (MSG));           \
+				uet_print_pkt_hdrs((&_pp));          \
+				printf("\n");                        \
+			}                                            \
+		} else {                                             \
+			printf("\n%s\n\n", (MSG));                   \
+			uet_print_pkt_hdrs((PP));                    \
+			printf("\n");                                \
+		}                                                    \
+	} while (0)
+#else
+#define UET_PDS_PKT_HDR_TRACE(...)
+#endif
+
 static void uet_pds_pkt_dbg(struct uet_instance *uet,
 			    struct uet_parsed_pkt *pp,
 			    bool is_tx,
@@ -197,6 +225,400 @@ static void uet_pds_pkt_dbg(struct uet_instance *uet,
 /****************************************************************************/
 /*                       Security and NIC Shim APIs                         */
 /****************************************************************************/
+
+static bool uet_is_valid_ipv6_ext_hdr(uint8_t ipproto)
+{
+	switch (ipproto) {
+	case UET_IPPROTO_EXT_HDR_HOP_BY_HOP:
+	case UET_IPPROTO_EXT_HDR_ROUTING:
+	case UET_IPPROTO_EXT_HDR_DEST_OPTS:
+	case UET_IPPROTO_EXT_HDR_MOBILITY:
+		return true;
+	default:
+		break;
+	}
+
+	return false;
+}
+
+static int uet_parse_chk_next_field(struct uet_parsed_pkt *pp,
+				    uint16_t field_offset, uint16_t field_len)
+{
+	if ((field_offset + field_len) > pp->pkt_len)
+		return -EFAULT;
+	return 0;
+}
+
+static int uet_get_ipv6_nexthdr(struct uet_parsed_pkt *pp)
+{
+	int rc;
+	struct ipv6hdr *ipv6;
+	struct ipv6_opt_hdr *opt_hdr;
+
+	ipv6 = (struct ipv6hdr *) pp->ip;
+	pp->ip_len = sizeof(struct ipv6hdr);
+	pp->ip_protocol = ipv6->nexthdr;
+
+	while (1) {
+		if ((pp->ip_protocol == UET_IPPROTO) ||
+		    (pp->ip_protocol == IPPROTO_UDP))
+			break;
+		if (!uet_is_valid_ipv6_ext_hdr(pp->ip_protocol))
+			return -EINVAL;
+		opt_hdr = (struct ipv6_opt_hdr *)
+			(((uint8_t *) pp->ip) + pp->ip_len);
+		rc = uet_parse_chk_next_field(pp, pp->eth_len + pp->ip_len,
+				sizeof(struct ipv6_opt_hdr));
+		if (rc != 0)
+			return rc;
+		pp->ip_protocol = opt_hdr->nexthdr;
+		pp->ip_len += ((opt_hdr->hdrlen + 1) << 3);
+	}
+
+	return 0;
+}
+
+static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp, 
+		  uint16_t uet_udp_port, size_t max_payload_len)
+{
+	int rc, num_vlan_tags = 0;
+	uint8_t *p, ip_ver;
+	uint16_t cur_len, *etype_p, ethertype, pds_type_next_flags;
+	bool done = false;
+	struct iphdr *ipv4;
+	struct udphdr *udp;
+	struct uet_sec *sec;
+	struct uet_sec_ssi *sec_ssi;
+	struct uet_pds_prlg *pds_prlg;
+	struct uet_pds_req *pds_req;
+	struct uet_pds_ack *pds_ack;
+	struct uet_pds_nack *pds_nack;
+	struct uet_pds_ctrl *pds_ctrl;
+	struct uet_ses_req_std *ses_req;
+	struct uet_ses_rsp *ses_rsp;
+	struct uet_ses_rsp_d *ses_rsp_d;
+
+	memset(pp, 0, sizeof(struct uet_parsed_pkt));
+
+	p = (uint8_t *) pkt;
+	pp->pkt_len = pkt_len;
+
+	/* parse ethernet header */
+	pp->eth = p;
+	pp->eth_len = sizeof(struct ethhdr);
+	etype_p = &(((struct ethhdr *)p)->h_proto);
+	while (!done) {
+		pp->ethertype = ntohs(*etype_p);
+		switch (pp->ethertype) {
+		case ETH_P_IP:
+		case ETH_P_IPV6:
+			done = true;
+			break;
+		case ETH_P_8021Q:
+			num_vlan_tags++;
+			if (num_vlan_tags > UET_MAX_VLAN_TAGS)
+				goto err_exit;
+			pp->eth_len += sizeof(struct uet_vlan_tag);
+			etype_p = (uint16_t *)
+				(((uint8_t *) etype_p) +
+				 sizeof(struct uet_vlan_tag));
+			break;
+		default:
+			if (pp->ethertype == UET_IPPROTO)
+				done = true;
+			else
+				goto err_exit;
+			break;
+		}
+	}
+
+	cur_len = pp->eth_len;
+	p = ((uint8_t *) pkt) + cur_len;
+
+	/* parse ip header */
+	pp->ip = p;
+	if (pp->ethertype == UET_IPPROTO) {
+		ip_ver = ((*((uint8_t *) pp->ip)) & UET_IP_VER_MASK) >>
+			 UET_IP_VER_SHIFT;
+		switch (ip_ver) {
+		case UET_IPV4_VER:
+			ethertype = ETH_P_IP;
+			break;
+		case UET_IPV6_VER:
+			ethertype = ETH_P_IPV6;
+			break;
+		default:
+			goto err_exit;
+		}
+	} else
+		ethertype = pp->ethertype;
+	switch (ethertype) {
+	case ETH_P_IP:
+		ipv4 = (struct iphdr *) p;
+		pp->ip_protocol = ipv4->protocol;
+		pp->ip_len = ipv4->ihl << 2;
+		break;
+	case ETH_P_IPV6:
+		rc = uet_get_ipv6_nexthdr(pp);
+		if (rc != 0)
+			return rc;
+		break;
+	default:
+		goto err_exit;
+	}
+
+	cur_len += pp->ip_len;
+	p = ((uint8_t *) pkt) + cur_len;
+
+	/* parse udp header */
+	if (pp->ip_protocol != UET_IPPROTO) {
+		switch (pp->ip_protocol) {
+		case IPPROTO_UDP:
+			udp = (struct udphdr *) p;
+			rc = uet_parse_chk_next_field(
+				pp, cur_len, sizeof(struct udphdr));
+			if (rc != 0)
+				return rc;
+			if (ntohs(udp->dest) != uet_udp_port)
+				goto err_exit;
+			pp->entropy = ntohs(udp->source);
+			pp->udp = p;
+			pp->udp_len = sizeof(struct udphdr);
+			cur_len += pp->udp_len;
+			p = ((uint8_t *) pkt) + cur_len;
+			break;
+		default:
+			goto err_exit;
+		}
+	}
+
+	/* parse security header */
+	pds_prlg = (struct uet_pds_prlg *) p;
+	rc = uet_parse_chk_next_field(pp, cur_len, sizeof(struct uet_pds_prlg));
+	if (rc != 0)
+		return rc;
+	if (pp->udp_len == 0)
+		pp->entropy = ntohs(pds_prlg->entropy);
+	pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
+	pp->pds_type = ((pds_type_next_flags & UET_PDS_TYPE_MASK) >>
+			UET_PDS_TYPE_SHIFT);
+	if (pp->pds_type == UET_PDS_TYPE_SECURITY) {
+		if (((pds_type_next_flags & UET_PDS_NEXT_HDR_MASK) >>
+		      UET_PDS_NEXT_HDR_SHIFT) != UET_HDR_PDS)
+			goto err_exit;
+		pp->sec = pds_prlg;
+		if (pds_type_next_flags & UET_SEC_SP_MASK) {
+			sec_ssi = (struct uet_sec_ssi *)pds_prlg;
+			pp->sec_an = !!(ntohl(sec_ssi->an_sdi) &
+					UET_SEC_AN_MASK);
+			pp->sec_sdi = (ntohl(sec_ssi->an_sdi) &
+				       UET_SEC_SDI_MASK);
+			pp->sec_ssi_valid = true;
+			pp->sec_ssi = ntohl(sec_ssi->ssi);
+			pp->sec_tsc = ntohll(sec_ssi->tsc);
+			pp->sec_len = sizeof(struct uet_sec_ssi);
+		} else {
+			sec = (struct uet_sec *)pds_prlg;
+			pp->sec_an = !!(ntohl(sec->an_sdi) &
+					UET_SEC_AN_MASK);
+			pp->sec_sdi = (ntohl(sec->an_sdi) &
+				       UET_SEC_SDI_MASK);
+			pp->sec_ssi_valid = false;
+			pp->sec_tsc = ntohll(sec->tsc);
+			pp->sec_len = sizeof(struct uet_sec);
+		}
+		cur_len += pp->sec_len;
+		p = ((uint8_t *) pkt) + cur_len;
+		pds_prlg = (struct uet_pds_prlg *) p;
+		rc = uet_parse_chk_next_field(
+				pp, cur_len, sizeof(struct uet_pds_prlg));
+		if (rc != 0)
+			return rc;
+		pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
+		pp->pds_type = (pds_type_next_flags & UET_PDS_TYPE_MASK) >>
+			       UET_PDS_TYPE_SHIFT;
+		pp->trailer_len = UET_SEC_ICV_SIZE;
+	}
+
+	/* parse pds header */
+	pp->pds = pds_prlg;
+	pp->next_hdr = ((pds_type_next_flags & UET_PDS_NEXT_HDR_MASK) >>
+			UET_PDS_NEXT_HDR_SHIFT);
+	pp->pds_flags = ((pds_type_next_flags & UET_PDS_FLAGS_MASK) >>
+			 UET_PDS_FLAGS_SHIFT);
+	switch (pp->pds_type) {
+	case UET_PDS_TYPE_RUD_REQ:
+	case UET_PDS_TYPE_ROD_REQ:
+		pds_req = (struct uet_pds_req *)pp->pds;
+		pp->pds_len = sizeof(struct uet_pds_req);
+		pp->pds_psn = ntohl(pds_req->psn);
+		pp->pds_spdcid = ntohs(pds_req->spdcid);
+		pp->pds_clear_fwd_psn = ntohl(pds_req->clear_psn);
+		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)
+			pp->pds_syn_off = ((ntohs(pds_req->mode_psn_off) &
+					    UET_PDS_REQ_PSN_OFF_MASK) >>
+					   UET_PDS_REQ_PSN_OFF_SHIFT);
+		else
+			pp->pds_dpdcid = ntohs(pds_req->dpdcid);
+		break;
+	case UET_PDS_TYPE_UUD_REQ:
+		pp->pds_len = sizeof(struct uet_pds_uud_req);
+		return 0;
+	case UET_PDS_TYPE_ACK:
+		pds_ack = (struct uet_pds_ack *)pp->pds;
+		pp->pds_len = sizeof(struct uet_pds_ack);
+		pp->pds_psn = ntohl(pds_ack->psn);
+		pp->pds_spdcid = ntohs(pds_ack->spdcid);
+		pp->pds_dpdcid = ntohs(pds_ack->dpdcid);
+		if (pp->pds_flags & UET_PDS_ACK_FLAGS_AX)
+			pp->pds_len += sizeof(struct uet_pds_ack_ext);
+		/* TODO: support for parsing the extended ACK header */
+		break;
+	case UET_PDS_TYPE_NACK:
+		pds_nack = (struct uet_pds_nack *)pp->pds;
+		pp->pds_len = sizeof(struct uet_pds_nack);
+		pp->pds_psn = ntohl(pds_nack->nack_psn);
+		pp->pds_spdcid = ntohs(pds_nack->spdcid);
+		pp->pds_dpdcid = ntohs(pds_nack->dpdcid);
+		pp->pds_nack_code = pds_nack->nack_code;
+		if (pp->pds_flags & UET_PDS_NACK_FLAGS_AX)
+			pp->pds_len += (sizeof(struct uet_pds_ack_ext) - 4);
+		/* TODO: support for parsing the extended ACK header */
+		return 0;
+	case UET_PDS_TYPE_CTRL:
+		pds_ctrl = (struct uet_pds_ctrl *)pp->pds;
+		pp->pds_len = sizeof(struct uet_pds_ctrl);
+		pp->pds_ctrl_payload = ntohl(pds_ctrl->payload);
+		/* TODO: support for parsing control messages */
+		return 0;
+	case UET_PDS_TYPE_RUDI_REQ:
+	case UET_PDS_TYPE_RUDI_RESP:
+		/* TODO: support for parsing RUDI */
+	default:
+		goto err_exit;
+	}
+
+	cur_len += pp->pds_len;
+	p = ((uint8_t *) pkt) + cur_len;
+
+	/* parse ses header */
+	pp->ses = p;
+	switch (pp->next_hdr) {
+	case UET_HDR_REQ_STD:
+		rc = uet_parse_chk_next_field(
+			pp, cur_len, sizeof(struct uet_ses_req_std));
+		if (rc != 0)
+			return rc;
+		pp->ses_len = sizeof(struct uet_ses_req_std);
+		ses_req = (struct uet_ses_req_std *) pp->ses;
+		pp->ses_opcode = (ses_req->cmn.eom_opcode &
+				  UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT;
+		pp->ses_msg_id = ntohs(ses_req->cmn.msg_id);
+		switch (pp->ses_opcode) {
+		case UET_ATOMIC:
+		case UET_FETCH_ATOMIC:
+		case UET_TSEND_ATOMIC:
+		case UET_TSEND_FETCH_ATOMIC:
+			pp->ses_len += sizeof(struct uet_ses_atomic_ext);
+			break;
+		case UET_RNDV_SEND:
+		case UET_RNDV_TSEND:
+			pp->ses_len += sizeof(struct uet_ses_rndv_ext);
+			break;
+		default:
+			break;
+		}
+		cur_len += pp->ses_len;
+		p = ((uint8_t *) pkt) + cur_len;
+		pp->payload = p;
+		pp->hdr_len = cur_len;
+
+		if (ses_req->cmn.ver_flags & UET_SES_REQ_FLAG_CRC)
+			pp->trailer_len += UET_SES_CRC_SIZE;
+
+		pp->pkt_payload_len =
+			pp->pkt_len - (pp->hdr_len + pp->trailer_len);
+
+		pp->ses_payload_len = uet_get_ses_req_payload_len(
+						pp, max_payload_len);
+
+		if (pp->ses_opcode != UET_READ) {
+			rc = uet_parse_chk_next_field(
+					pp, cur_len, pp->ses_payload_len);
+			if (rc != 0)
+				return rc;
+			cur_len += pp->ses_payload_len;
+		}
+
+		if (ses_req->cmn.ver_flags & UET_SES_REQ_FLAG_CRC) {
+			rc = uet_parse_chk_next_field(
+					pp, cur_len, UET_SES_CRC_SIZE);
+			if (rc != 0)
+				return rc;
+			pp->ses_crc = ((uint8_t *) pkt) + cur_len;
+			cur_len += UET_SES_CRC_SIZE;
+		}
+		break;
+	case UET_HDR_RSP:
+		ses_rsp = (struct uet_ses_rsp *) pp->ses;
+		pp->ses_opcode = (ses_rsp->cmn.list_opcode &
+				  UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT;
+		pp->ses_msg_id = ntohs(ses_rsp->cmn.msg_id);
+
+		if (pp->ses_opcode == UET_DEFAULT_RESPONSE) {
+			rc = uet_parse_chk_next_field(
+					pp, cur_len,
+					sizeof(struct uet_pds_def_rsp));
+			if (rc != 0)
+				return rc;
+			pp->ses_len = sizeof(struct uet_pds_def_rsp);
+		} else {
+			rc = uet_parse_chk_next_field(
+					pp, cur_len,
+					sizeof(struct uet_ses_rsp));
+			if (rc != 0)
+				return rc;
+			pp->ses_len = sizeof(struct uet_ses_rsp);
+		}
+
+		cur_len += pp->ses_len;
+		pp->hdr_len = cur_len;
+		break;
+	case UET_HDR_RSP_DATA:
+		rc = uet_parse_chk_next_field(
+				pp, cur_len, sizeof(struct uet_ses_rsp_d));
+		if (rc != 0)
+			return rc;
+		pp->ses_len = sizeof(struct uet_ses_rsp_d);
+		cur_len += pp->ses_len;
+		pp->hdr_len = cur_len;
+		ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
+		pp->ses_opcode = (ses_rsp_d->cmn.list_opcode &
+				  UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT;
+		pp->ses_msg_id = ntohs(ses_rsp_d->cmn.msg_id);
+		pp->pkt_payload_len =
+			pp->pkt_len - (pp->hdr_len + pp->trailer_len);
+		pp->ses_payload_len =
+			(ntohl(ses_rsp_d->rsvd_payload_len) &
+			 UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
+			UET_SES_RSP_D_PAYLOAD_LEN_SHIFT;
+		rc = uet_parse_chk_next_field(pp, cur_len, pp->ses_payload_len);
+		if (rc != 0)
+			return rc;
+		cur_len += pp->ses_payload_len;
+		break;
+	case UET_HDR_REQ_SMALL:
+	case UET_HDR_REQ_MEDIUM:
+	case UET_HDR_RSP_DATA_SMALL:
+	default:
+		goto err_exit;
+	}
+
+	return 0;
+
+err_exit:
+	return -EINVAL;
+}
 
 static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			      struct uet_pdc *pdc,
@@ -252,6 +674,7 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 
 	/* inject/build the security header and encrypt the packet */
 
+#if 0
 	if (is_rtx) {
 		rc = uet_sec_update_hdr_tsc(*pkt);
 		if (rc != 0)
@@ -298,6 +721,9 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 
 	/* TODO: IPv6 support */
 	return uet_nic_tx_pkt(UET_NIC(uet), new_pkt, pp->ip, new_pkt_len);
+#else
+	return -EPERM;
+#endif
 }
 
 /*
@@ -323,7 +749,7 @@ static int uet_pds_sec_rx_pkt(struct uet_instance *uet,
 
 	/* TODO: Remove this malloc... */
 	/* allocate a receive packet buffer */
-	*pkt = calloc(1, uet->nic.max_pkt_size);
+	*pkt = kcalloc(1, uet->nic.max_pkt_size, GFP_KERNEL);
 	if (*pkt == NULL) {
 		UET_PDS_ERR("failed to alloc Rx packet buffer");
 		return -ENOMEM;
@@ -345,7 +771,7 @@ static int uet_pds_sec_rx_pkt(struct uet_instance *uet,
 	return 1;
 
 err_exit:
-	free(*pkt);
+	kfree(*pkt);
 	*pkt = NULL;
 	*pkt_len = 0;
 	return rc;
@@ -413,13 +839,13 @@ static void uet_pdsm_get_sdi(struct uet_pdc *pdc)
 {
 	char *sec_ssi;
 
-	pdc->sec_enabled = !!getenv(UET_SEC_MODE);
+	pdc->sec_enabled = false /* FIXME: !!getenv(UET_SEC_MODE) */;
 	pdc->sdi = 1; /* fixed SDI for now... */
 	pdc->ssi = 0;
 
-	sec_ssi = getenv(UET_SEC_SSI);
+	sec_ssi = NULL /* FIXME: getenv(UET_SEC_SSI) */;
 	if (sec_ssi)
-		pdc->ssi = strtoul(sec_ssi, NULL, 10);
+		pdc->ssi = kstrtoul(sec_ssi, 10, NULL);
 }
 
 static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
@@ -530,7 +956,7 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	pdc = uet_pdsm_alloc_pdc();
 	if (!pdc) {
 		UET_PDS_ERR("no free PDCs available for target");
-		return -ENODEV;
+		return NULL;
 	}
 
 	/* initialze this target PDC and stick it in the hashtable */
@@ -584,7 +1010,7 @@ static int uet_pdsm_map_msgid_pdc(uint16_t msg_id,
 	PDS_GO();
 
 	/* TODO: pull msgid_map descriptor from a pool (not malloc) */
-	msgid_map = calloc(1, sizeof(*msgid_map));
+	msgid_map = kcalloc(1, sizeof(*msgid_map), GFP_KERNEL);
 	if (msgid_map == NULL)
 		return -ENOMEM;
 
@@ -611,7 +1037,7 @@ static int uet_pdsm_unmap_msgid_pdc(uint16_t msg_id)
 	}
 
 	HASH_DELETE(msgid_hh, pds_state.pdc_msgid_ht, msgid_map);
-	free(msgid_map);
+	kfree(msgid_map);
 
 	return 0;
 }
@@ -697,6 +1123,7 @@ static int uet_pdsm_check_nack_code(struct uet_pdc_pkt *pdc_pkt)
 /****************************************************************************/
 /*                             SES->PDS APIs                                */
 /****************************************************************************/
+
 
 int uet_pds_initialize(struct uet_instance *uet)
 {
@@ -796,10 +1223,10 @@ void uet_pds_finalize(struct uet_instance *uet)
 		uet_list_pop_front(&pds_state.pending_pkts_head,
 				struct uet_pdc_pkt, pdc_pkt, node);
 		if (pdc_pkt->pkt_buf)
-			free(pdc_pkt->pkt_buf);
+			kfree(pdc_pkt->pkt_buf);
 		if (pdc_pkt->ack_buf)
-			free(pdc_pkt->ack_buf);
-		free(pdc_pkt);
+			kfree(pdc_pkt->ack_buf);
+		kfree(pdc_pkt);
 	}
 
 	/* wipe out all existing state */
@@ -927,7 +1354,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	 * - add support for gather iov send
 	 */
 
-	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
+	pdc_pkt = kcalloc(1, sizeof(struct uet_pdc_pkt), GFP_KERNEL);
 	if (pdc_pkt == NULL) {
 		UET_PDS_ERR("failed to alloc PDC packet");
 		return -ENOMEM;
@@ -935,10 +1362,10 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	pdc_pkt->pkt_buf_len = (uet->nic.max_pkt_size *
 				((pdc->sec_enabled) ? 2 : 1));
-	pdc_pkt->pkt_buf = calloc(1, pdc_pkt->pkt_buf_len);
+	pdc_pkt->pkt_buf = kcalloc(1, pdc_pkt->pkt_buf_len, GFP_KERNEL);
 	if (pdc_pkt->pkt_buf == NULL) {
 		UET_PDS_ERR("failed to alloc packet buffer");
-		free(pdc_pkt);
+		kfree(pdc_pkt);
 		return -ENOMEM;
 	}
 
@@ -1030,8 +1457,8 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	/* send the packet */
 	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
 	if (rc != 0) {
-		free(pdc_pkt->pkt_buf);
-		free(pdc_pkt);
+		kfree(pdc_pkt->pkt_buf);
+		kfree(pdc_pkt);
 		return rc;
 	}
 
@@ -1092,7 +1519,7 @@ static int uet_pds_check_rtx_pkt(struct uet_instance *uet,
 				 struct uet_pdc *pdc,
 				 struct uet_pdc_pkt *pdc_pkt)
 {
-	time_t now, delta;
+	uint64_t now, delta;
 	int rc;
 
 	uet_gettime(&now);
@@ -1125,7 +1552,7 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 	struct uet_pdc *pdc;
 	struct uet_list_entry *tmp1, *tmp2;
 	struct uet_pdc_pkt *pdc_pkt;
-	time_t now, delta;
+	uint64_t now, delta;
 	int rc;
 
 	uet = uet_ep->uet_domain->uet;
@@ -1274,7 +1701,7 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 				     UET_SEC_TAG_LEN)
 				  : 0)) *
 				((pdc->sec_enabled) ? 2 : 1));
-	pdc_pkt->ack_buf = calloc(1, pdc_pkt->ack_buf_len);
+	pdc_pkt->ack_buf = kcalloc(1, pdc_pkt->ack_buf_len, GFP_KERNEL);
 	if (pdc_pkt->ack_buf == NULL) {
 		UET_PDS_ERR("failed to alloc ACK packet buffer");
 		return -ENOMEM;
@@ -1295,7 +1722,7 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 	if (rc != 0) {
 		pdc_pkt->needs_clear = false;
 		pdc_pkt->ack_len = 0;
-		free(pdc_pkt->ack_buf);
+		kfree(pdc_pkt->ack_buf);
 		return rc;
 	}
 
@@ -1333,7 +1760,7 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 				 UET_SEC_TAG_LEN)
 			      : 0)) *
 			   ((pdc->sec_enabled) ? 2 : 1));
-	def_rsp_buf = calloc(1, def_rsp_buf_len);
+	def_rsp_buf = kcalloc(1, def_rsp_buf_len, GFP_KERNEL);
 	if (def_rsp_buf == NULL) {
 		UET_PDS_ERR("failed to alloc DEF_RSP ACK packet buffer");
 		return -ENOMEM;
@@ -1389,14 +1816,14 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 	/* send the default response ACK packet */
 	rc = uet_pds_sec_tx_pkt(uet, pdc, &tmp_pdc_pkt, false, false);
 	if (rc != 0) {
-		free(def_rsp_buf);
+		kfree(def_rsp_buf);
 		return rc;
 	}
 
 	uet_pds_pkt_dbg(uet, &tmp_pdc_pkt.ack_pp, true,
 			"TX DEF_RSP ACK PACKET (duplicate)");
 
-	free(def_rsp_buf);
+	kfree(def_rsp_buf);
 	return 0;
 }
 
@@ -1478,8 +1905,8 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 	pds_info.pdcid = pdc->pdc_id;
 
 	/* allocate a buffer for the SES reponse data */
-	rsp_ses_hdr = calloc(1, (sizeof(struct uet_ses_rsp_d) +
-				 uet->pds.max_ack_data));
+	rsp_ses_hdr = kcalloc(1, (sizeof(struct uet_ses_rsp_d) +
+				 uet->pds.max_ack_data), GFP_KERNEL);
 	if (rsp_ses_hdr == NULL) {
 		UET_PDS_ERR("failed to alloc SES response buffer");
 		return -ENOMEM;
@@ -1512,7 +1939,7 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 			    pdc_pkt->pkt_pp.pds_psn, rc);
 	}
 
-	free(rsp_ses_hdr);
+	kfree(rsp_ses_hdr);
 	return rc;
 }
 
@@ -1545,10 +1972,10 @@ static int uet_pds_shift_rx_window(struct uet_instance *uet,
 		pdc->rx_bm_base_psn++;
 
 		if (pdc_pkt->ack_buf)
-			free(pdc_pkt->ack_buf);
+			kfree(pdc_pkt->ack_buf);
 		if (pdc_pkt->pkt_buf)
-			free(pdc_pkt->pkt_buf);
-		free(pdc_pkt);
+			kfree(pdc_pkt->pkt_buf);
+		kfree(pdc_pkt);
 	}
 
 #if 0
@@ -1589,10 +2016,10 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 		pdc->tx_bm_base_psn++;
 
 		if (pdc_pkt->ack_buf)
-			free(pdc_pkt->ack_buf);
+			kfree(pdc_pkt->ack_buf);
 		if (pdc_pkt->pkt_buf)
-			free(pdc_pkt->pkt_buf);
-		free(pdc_pkt);
+			kfree(pdc_pkt->pkt_buf);
+		kfree(pdc_pkt);
 	}
 
 #if 0
@@ -1802,7 +2229,7 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		return -EINVAL;
 	}
 
-	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
+	pdc_pkt = kcalloc(1, sizeof(struct uet_pdc_pkt), GFP_KERNEL);
 	if (pdc_pkt == NULL) {
 		UET_PDS_ERR("failed to alloc PDC packet");
 		return -ENOMEM;
@@ -1894,8 +2321,119 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	return 0;
 
 exit_err:
-	free(pdc_pkt);
+	kfree(pdc_pkt);
 	return rc;
+}
+
+/* determine if uet packet type is valid */
+static bool uet_pds_pkt_type_valid(uint8_t *pkt,
+				   bool *pkt_is_ack,
+				   bool *pkt_is_rd_rsp)
+{
+	struct uet_sec *sec_hdr;
+	struct uet_pds_req *pds_hdr;
+	uint16_t pds_type, next_hdr;
+	bool pds_req;
+
+	*pkt_is_ack = false;
+	*pkt_is_rd_rsp = false;
+
+	/* TODO: IPv6 support */
+	pds_hdr = (struct uet_pds_req *)(pkt +
+					 sizeof(struct ethhdr) +
+					 sizeof(struct iphdr));
+
+	pds_type = ((ntohs(pds_hdr->prlg.type_next_flags) &
+		     UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT);
+	next_hdr = ((ntohs(pds_hdr->prlg.type_next_flags) &
+		     UET_PDS_NEXT_HDR_MASK) >> UET_PDS_NEXT_HDR_SHIFT);
+
+	if (pds_type == UET_PDS_TYPE_SECURITY) {
+		if (next_hdr != UET_HDR_PDS)
+			return false;
+
+		/* TODO: IPv6 support */
+		sec_hdr = (struct uet_sec *)pds_hdr;
+		if (ntohs(sec_hdr->type_next_flags) & UET_SEC_SP_MASK) {
+			pds_hdr =
+				(struct uet_pds_req *)((uint8_t *)sec_hdr +
+						       sizeof(struct uet_sec_ssi));
+		} else {
+			pds_hdr =
+				(struct uet_pds_req *)((uint8_t *)sec_hdr +
+						        sizeof(struct uet_sec));
+		}
+
+		pds_type = ((ntohs(pds_hdr->prlg.type_next_flags) &
+			     UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT);
+		next_hdr = ((ntohs(pds_hdr->prlg.type_next_flags) &
+			     UET_PDS_NEXT_HDR_MASK) >> UET_PDS_NEXT_HDR_SHIFT);
+	}
+
+	switch (pds_type) {
+	case UET_PDS_TYPE_ROD_REQ:
+	case UET_PDS_TYPE_RUD_REQ:
+		pds_req = true;
+		break;
+	case UET_PDS_TYPE_ACK:
+		pds_req = false;
+		next_hdr = UET_HDR_RSP;
+		break;
+	default:
+		return false;
+	}
+
+	switch (next_hdr) {
+	case UET_HDR_REQ_SMALL:
+	case UET_HDR_REQ_MEDIUM:
+	case UET_HDR_REQ_STD:
+		if (pds_req)
+			return true;
+		break;
+	case UET_HDR_RSP:
+		if (pds_req == false) {
+			*pkt_is_ack = true;
+			return true;
+		}
+		break;
+	case UET_HDR_RSP_DATA:
+	case UET_HDR_RSP_DATA_SMALL:
+		if (pds_req == false) {
+			*pkt_is_ack = true;
+			return true;
+		}
+		*pkt_is_rd_rsp = true;
+		return true;
+	default:
+		break;
+	}
+
+	return false;
+}
+
+static bool uet_pds_rx_pkt_chk(struct uet_nic *nic,
+			uint8_t *pkt,
+			size_t pkt_size,
+			bool *pkt_is_ack,
+			bool *pkt_is_rd_rsp)
+{
+	struct ethhdr *eth = (struct ethhdr *)pkt;
+	struct iphdr *ipv4 = (struct iphdr *)(eth + 1);
+
+	/* TODO: IPv6 support */
+	if (!memcmp(eth->h_dest, nic->mac_addr, ETH_ALEN) &&
+	    (eth->h_proto == htons(ETH_P_IP)) &&
+	    (ipv4->version == IPVERSION) &&
+	    (ipv4->ihl == UET_IPV4_IHL_NO_OPTIONS) &&
+	    (ipv4->protocol == UET_IPPROTO) &&
+	    (ipv4->tot_len >= htons(nic->min_ip_pkt_size)) &&
+	    (ipv4->tot_len <=
+	     htons((pkt_size - nic->l2_hdr_size))) &&
+	    (uet_ipv4_csum(ipv4) == 0) &&
+	    (uet_pds_pkt_type_valid(pkt, pkt_is_ack, pkt_is_rd_rsp)))
+		return true;
+
+	return false;
 }
 
 int uet_pds_progress_rx(struct uet_instance *uet)
@@ -1953,14 +2491,14 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	return 0;
 
 exit_err:
-	free(pkt);
+	kfree(pkt);
 	return rc;
 }
 
 void uet_pds_ep_close_wait(struct uet_ep *uet_ep)
 {
 	struct uet_instance *uet;
-	time_t start_time, now;
+	uint64_t start_time, now;
 
 	uet_ep->ep_state = UET_EP_CLOSE_WAIT;
 
@@ -1990,3 +2528,40 @@ void uet_pds_ep_close_wait(struct uet_ep *uet_ep)
 	}
 }
 
+static int uet_pds_module_init(void)
+{
+	uet_pds_initialize_fn 			= uet_pds_initialize;
+	uet_pds_finalize_fn 			= uet_pds_finalize;
+	uet_pds_ep_initialize_fn 		= uet_pds_ep_initialize;
+	uet_pds_ep_finalize_fn 			= uet_pds_ep_finalize;
+	uet_pds_tx_pkt_fn 				= uet_pds_tx_pkt;
+	uet_pds_progress_tx_fn 			= uet_pds_progress_tx;
+	uet_pds_msg_cmpl_ind_fn 		= uet_pds_msg_cmpl_ind;
+	uet_pds_progress_rx_fn 			= uet_pds_progress_rx;
+	uet_pds_ep_close_wait_fn 		= uet_pds_ep_close_wait;
+
+	uet_sec_init();
+
+	return 0;
+}
+
+static void uet_pds_module_exit(void)
+{
+	uet_pds_initialize_fn 			= NULL;
+	uet_pds_finalize_fn 			= NULL;
+	uet_pds_ep_initialize_fn 		= NULL;
+	uet_pds_ep_finalize_fn 			= NULL;
+	uet_pds_tx_pkt_fn 				= NULL;
+	uet_pds_progress_tx_fn 			= NULL;
+	uet_pds_msg_cmpl_ind_fn 		= NULL;
+	uet_pds_progress_rx_fn 			= NULL;
+	uet_pds_ep_close_wait_fn 		= NULL;
+}
+
+module_init(uet_pds_module_init);
+module_exit(uet_pds_module_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Rakhahari Bhunia <rakhahari.bhunia@keysight.com>");
+MODULE_DESCRIPTION("SoftUET Driver PDS Module");
+MODULE_VERSION("0.1");

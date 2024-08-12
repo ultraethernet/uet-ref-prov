@@ -2,16 +2,21 @@
  * Copyright (c) 2024, Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-
+#include <linux/slab.h>
 #include "bitmap.h"
 
 #define TRAILING_ZEROES __builtin_ctzll
 #define LEADING_ZEROES  __builtin_clzll
-#define TOTAL_NONZERO   __builtin_popcountll
+
+static inline int popcount64(uint64_t x)
+{
+    int count;
+	for (count=0; x; count++)
+		x &= x - 1;
+	return count;
+}
+
+#define TOTAL_NONZERO   popcount64
 
 struct bitmap *bm_create(int size)
 {
@@ -21,23 +26,23 @@ struct bitmap *bm_create(int size)
 		return NULL;
 
 	/* Allocate the bm itself. */
-	bm = (struct bitmap *)malloc(sizeof(struct bitmap));
+	bm = (struct bitmap *)kmalloc(sizeof(struct bitmap), GFP_ATOMIC);
 	if (bm == NULL)
 		return NULL;
 
 	bm->size = size;
 	bm->bit_arr_len = (bm->size / (sizeof(uint64_t) * 8));
 
-	bm->bit_arr = (uint64_t *)calloc(bm->bit_arr_len, sizeof(uint64_t));
+	bm->bit_arr = (uint64_t *)kcalloc(bm->bit_arr_len, sizeof(uint64_t), GFP_ATOMIC);
 	if (bm->bit_arr == NULL) {
-		free(bm);
+		kfree(bm);
 		return NULL;
 	}
 
-	bm->data_arr = (void *)calloc(bm->size, sizeof(void *));
+	bm->data_arr = (void *)kcalloc(bm->size, sizeof(void *), GFP_ATOMIC);
 	if (bm->data_arr == NULL) {
-		free(bm->bit_arr);
-		free(bm);
+		kfree(bm->bit_arr);
+		kfree(bm);
 		return NULL;
 	}
 
@@ -46,9 +51,9 @@ struct bitmap *bm_create(int size)
 
 void bm_destroy(struct bitmap *bm)
 {
-	free(bm->data_arr);
-	free(bm->bit_arr);
-	free(bm);
+	kfree(bm->data_arr);
+	kfree(bm->bit_arr);
+	kfree(bm);
 }
 
 void bm_clear(struct bitmap *bm)
@@ -242,15 +247,15 @@ void bm_print_idx(const struct bitmap *b)
 	bool found_bit = false;
 	int i;
 
-	printf("{\n");
+	printk("{\n");
 	for (i = 0; bm_next_set_bit_iter(b, &i); i++) {
 		if (found_bit)
-			printf(",\n");
+			printk(",\n");
 		bm_get(b, i, &data);
-		printf("  %u -> %p", i, data);
+		printk("  %u -> %p", i, data);
 		found_bit = true;
 	}
-	printf("\n}\n");
+	printk("\n}\n");
 }
 
 void bm_print_bits(const struct bitmap *b)
@@ -261,11 +266,11 @@ void bm_print_bits(const struct bitmap *b)
 	for (idx = (b->bit_arr_len - 1); idx >= 0; idx--) {
 		for (i = (word_size - 1); i >= 0; i--) {
 			bit = (i + (idx * word_size));
-			printf("%d", (bm_get(b, bit, NULL) ? 1 : 0));
+			printk("%d", (bm_get(b, bit, NULL) ? 1 : 0));
 			if ((i != 0) && ((i % 8) == 0))
-				printf(".");
+				printk(".");
 		}
-		printf(" (%d..%d)\n",
+		printk(" (%d..%d)\n",
 		       (((idx + 1) * word_size) - 1),
 		       (idx * word_size));
 	}

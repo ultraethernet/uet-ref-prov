@@ -6,9 +6,6 @@
 #ifndef _BITMAP_H_
 #define _BITMAP_H_
 
-#include <stdint.h>
-#include <stdbool.h>
-
 struct bitmap {
 	uint64_t *bit_arr;
 	int bit_arr_len;

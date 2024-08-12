@@ -2,7 +2,7 @@
 #include <linux/types.h>
 
 #include "uet_pkt_hdr.h"
-#include "uet_sec.h"
+//#include "uet_sec.h"
 #include "uet_util.h"
 #include "uet_api_private.h"
 
@@ -110,7 +110,7 @@ static int uet_alloc_opt_mr_desc(struct uet_domain *uet_dom, size_t *mr_index)
 static void uet_dealloc_mr_desc(struct uet_domain *uet_dom,
 				struct uet_mr_desc *mr_desc)
 {
-	uint8_t *offset;
+	ptrdiff_t offset;
 	size_t mr_index;
 
 	mr_desc->state = UET_MR_DESC_STATE_INACTIVE;
@@ -3668,10 +3668,6 @@ int uet_initialize_internal(uet_handle_t *handle)
 	uet->pds.upcall.pds_err = uet_pds_to_ses_pds_err;
 
 	uet_rw_lock_init(&uet->ipv4_ep_lkup_lock);
-
-	rc = uet_sec_init();
-	if (rc != 0)
-		goto err_return;
 
 	rc = uet_pds_init(uet);
 	if (rc != 0)

@@ -502,6 +502,8 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 		return 0;
 	}
 
+	BUG_ON(1);
+
 	/* get the sdi/an */
 	sdi = ntohl(sec->an_sdi);
 	an  = !!(sdi & UET_SEC_AN_MASK);
@@ -635,6 +637,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 
 	return 0;
 }
+EXPORT_SYMBOL(uet_sec_dec_pkt);
 
 static int uet_sec_init_sd(uint32_t sdi,
 			   uet_sec_mode_t mode,

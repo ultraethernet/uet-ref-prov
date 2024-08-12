@@ -96,32 +96,6 @@ struct uet_parsed_pkt {
 	void *ses_crc;
 };
 
-//#define UET_PDS_PKT_HDR_TRACE_ENABLED
-
-#ifdef UET_PDS_PKT_HDR_TRACE_ENABLED
-#define UET_PDS_PKT_HDR_TRACE(UET, PP, PKT, PKT_LEN, MSG)            \
-	do {                                                         \
-		struct uet_parsed_pkt _pp;                           \
-		if ((PP) == NULL) {                                  \
-			if (uet_parse_pkt((PKT),                     \
-					  (PKT_LEN), &_pp,           \
-					  (UET)->uet_udp_port,       \
-					  (UET)->max_payload_len) == \
-			    0) {                                     \
-				printf("\n%s\n\n", (MSG));           \
-				uet_print_pkt_hdrs((&_pp));          \
-				printf("\n");                        \
-			}                                            \
-		} else {                                             \
-			printf("\n%s\n\n", (MSG));                   \
-			uet_print_pkt_hdrs((PP));                    \
-			printf("\n");                                \
-		}                                                    \
-	} while (0)
-#else
-#define UET_PDS_PKT_HDR_TRACE(...)
-#endif
-
 struct uet_instance; /* forward reference */
 
 static inline uint64_t uet_gettime(uint64_t *time_ms)
@@ -145,11 +119,78 @@ static inline uint8_t uet_dscp_to_tos(uint8_t dscp)
 	return (dscp << 2);
 }
 
-uint16_t uet_csum(uint16_t *buf, int cnt);
-uint16_t uet_ipv4_csum(struct iphdr *ipv4);
-void uet_build_ipv4_hdr(struct iphdr *ipv4, uint32_t dip, 
-			uint32_t sip, uint16_t tot_len, uint8_t tos);
-void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac);
+/*
+ * compute internet checksum
+ *
+ * parms:
+ *      buf - ptr to buffer that checksum is to be computed over
+ *      cnt - number of 16b words in buf
+ *
+ * returns:
+ *      computed checksum
+ */
+static inline uint16_t uet_csum(uint16_t *buf, int cnt)
+{
+	unsigned long sum;
+
+	for (sum = 0; cnt > 0; cnt--)
+		sum += htons(*(buf)++);
+	do {
+		sum = ((sum >> 16) + (sum & 0xFFFF));
+	} while (sum & 0xFFFF0000);
+
+	return (~sum);
+}
+
+/*
+ * compute ipv4 header checksum
+ *
+ * parms:
+ *      ipv4 - ptr to ipv4 header for which checksum is to be computed
+ *
+ * returns:
+ *      computed checksum
+ */
+static inline uint16_t uet_ipv4_csum(struct iphdr *ipv4)
+{
+	return htons(uet_csum((uint16_t *)ipv4, ipv4->ihl * 2));
+}
+
+/*
+ * build ipv4 header
+ *
+ * parms:
+ *      uet     - ptr to uet instance struct
+ *      ipv4    - ptr to location where ipv4 header is to be built
+ *      dip     - destination ipv4 address
+ *      sip     - source ipv4 address
+ *      tot_len - value for total length field of ipv4 header
+ *      tos     - value for tos field of ipv4 header
+ */
+static inline void uet_build_ipv4_hdr(struct iphdr *ipv4, uint32_t dip, 
+			uint32_t sip, uint16_t tot_len, uint8_t tos)
+{
+	ipv4->version = IPVERSION;
+	ipv4->ihl = UET_IPV4_IHL_NO_OPTIONS;
+	ipv4->tos = tos;
+	ipv4->tot_len = htons(tot_len);
+	ipv4->id = 0;
+	ipv4->frag_off = htons(UET_IPV4_FRAG_OFF_DF);
+	ipv4->ttl = IPDEFTTL;
+	ipv4->protocol = UET_IPPROTO;
+	ipv4->saddr = sip;
+	ipv4->daddr = dip;
+	ipv4->check = 0;
+	ipv4->check = uet_ipv4_csum(ipv4);
+}
+
+static inline void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac)
+{
+	eth->h_proto = htons(ETH_P_IP);
+	memcpy(eth->h_dest, dmac, ETH_ALEN);
+	memcpy(eth->h_source, smac, ETH_ALEN);
+}
+
 void uet_pkt_hex_dump(void *pkt, uint32_t length, uint64_t addr, bool is_tx);
 
 static inline void uet_rw_lock(struct uet_rw_lock *lock, uet_rw_lock_access_t access)
@@ -185,9 +226,32 @@ static inline void uet_rw_lock_init(struct uet_rw_lock *lock)
 	rwlock_init(&lock->lock);
 }
 
-uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
-				     uint16_t max_payload_len);
-int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp, 
-		  uint16_t uet_udp_port, size_t max_payload_len);
+static inline uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
+				     uint16_t max_payload_len)
+{
+	uint16_t hdr_len, payload_len;
+	uint32_t req_len;
+	uint64_t msg_off_payload_len;
+	struct uet_ses_req_std *ses;
+
+	ses = (struct uet_ses_req_std *) pp->ses;
+	req_len = ntohl(ses->req_len);
+
+	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM) {
+		if (pp->ses_opcode == UET_READ)
+			payload_len = max_payload_len;
+		else
+			payload_len = pp->pkt_payload_len;
+		if (payload_len > req_len)
+			payload_len = req_len;
+	} else {
+		msg_off_payload_len = ntohll(ses->msg_off_payload_len);
+		payload_len = ((msg_off_payload_len &
+				UET_SES_REQ_STD_PAYLOAD_LEN_MASK) >>
+			       UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT);
+	}
+
+	return payload_len;
+}
 
 #endif /* _UET_UTIL_H_ */

@@ -293,4 +293,25 @@ struct uet_pds {
 /* initialize the PDS and set the proper downcall function pointers */
 int uet_pds_init(struct uet_instance *uet);
 
+/* PDS implementation (real) */
+extern int (*uet_pds_initialize_fn)(struct uet_instance *uet);
+extern void (*uet_pds_finalize_fn)(struct uet_instance *uet);
+extern int (*uet_pds_ep_initialize_fn)(struct uet_ep *uet_ep);
+extern void (*uet_pds_ep_finalize_fn)(struct uet_ep *uet_ep);
+extern int (*uet_pds_tx_pkt_fn)(uet_pkt_handle_t tx_pkt_handle,
+			  struct uet_ep *uet_ep,
+			  uet_addr_handle_t dst_addr_handle,
+			  uet_pds_mode_t mode, uet_pds_tx_flags_t flags,
+			  struct uet_pds_info *pds_info,
+			  uint16_t msg_id, uet_next_hdr_t next_hdr,
+			  void *ses, size_t ses_len, void *pkt,
+			  size_t pkt_len, bool dma_rdy);
+extern int (*uet_pds_progress_tx_fn)(struct uet_ep *uet_ep,
+			       uet_pkt_handle_t *err_pkt_handle);
+extern int (*uet_pds_msg_cmpl_ind_fn)(struct uet_ep *uet_ep,
+				uet_addr_handle_t dst_addr_handle,
+				uet_pds_mode_t mode, uint16_t msg_id);
+extern int (*uet_pds_progress_rx_fn)(struct uet_instance *uet);
+extern void (*uet_pds_ep_close_wait_fn)(struct uet_ep *uet_ep);
+
 #endif /* _UET_PDS_H_ */
