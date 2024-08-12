@@ -254,4 +254,27 @@ static inline int uet_nic_mr_dereg(struct uet_nic *nic,
 	return nic->nic_mr_dereg(nic, handle);
 }
 
+extern int (*uet_nic_getinfo_fn)(struct uet_nic *nic,
+			       struct uet_nic_info *nic_info);
+extern int (*uet_nic_get_ipv4_nh_fn)(struct uet_nic *nic,
+				   uint32_t dst_ip,
+				   uint8_t *mac);
+extern int (*uet_nic_tx_pkt_fn)(struct uet_nic *nic,
+			      void *pkt,
+			      void *iphdr,
+			      size_t pkt_size);
+extern int (*uet_nic_rx_pkt_fn)(struct uet_nic *nic,
+			      void *pkt,
+			      size_t pkt_buf_size,
+			      size_t *rx_pkt_size);
+extern int (*uet_nic_rx_poll_fn)(struct uet_nic *nic);
+extern int (*uet_nic_mr_reg_fn)(struct uet_nic *nic,
+			      struct uet_mr_buf_desc *desc,
+			      uet_nic_mr_handle_t *handle);
+extern int (*uet_nic_mr_dereg_fn)(struct uet_nic *nic,
+				uet_nic_mr_handle_t handle);
+extern void (*uet_nic_finalize_fn)(struct uet_nic *nic);
+extern int (*uet_nic_initialize_fn)(struct uet_nic *nic);
+
+
 #endif /* _UET_NIC_H_ */
