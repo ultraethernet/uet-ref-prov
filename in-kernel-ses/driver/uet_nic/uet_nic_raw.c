@@ -77,7 +77,7 @@ static const struct net_protocol uet_protocol = {
 	.no_policy		= 1,
 };
 
-static int uet_nic_udptunnel_getinfo(struct uet_nic *nic,
+static int uet_nic_raw_getinfo(struct uet_nic *nic,
 				struct uet_nic_info *nic_info)
 {
 	struct uet_nic_data *p_data =
@@ -95,7 +95,7 @@ static int uet_nic_udptunnel_getinfo(struct uet_nic *nic,
 	return 0;
 }
 
-static int uet_nic_udptunnel_get_ipv4_nh(struct uet_nic *nic,
+static int uet_nic_raw_get_ipv4_nh(struct uet_nic *nic,
 			uint32_t dst_ip, uint8_t *mac)
 {
 	struct uet_nic_data *p_data =
@@ -117,7 +117,7 @@ static int uet_nic_udptunnel_get_ipv4_nh(struct uet_nic *nic,
 	return 0;
 }
 
-static int uet_nic_udptunnel_tx_pkt(struct uet_nic *nic,
+static int uet_nic_raw_tx_pkt(struct uet_nic *nic,
 			void *pkt, void *iphdr, size_t pkt_size)
 {
 	struct ethhdr *eth = (struct ethhdr *) pkt;
@@ -150,7 +150,7 @@ static int uet_nic_udptunnel_tx_pkt(struct uet_nic *nic,
 	return 0;
 }
 
-static int uet_nic_udptunnel_rx_pkt(struct uet_nic *nic,
+static int uet_nic_raw_rx_pkt(struct uet_nic *nic,
 			void *pkt, size_t pkt_buf_size, size_t *rx_pkt_size)
 {
 	struct uet_nic_data *p_data = 
@@ -163,7 +163,7 @@ static int uet_nic_udptunnel_rx_pkt(struct uet_nic *nic,
 	return 0;
 }
 
-static int uet_nic_udptunnel_rx_poll(struct uet_nic *nic)
+static int uet_nic_raw_rx_poll(struct uet_nic *nic)
 {
 	struct uet_nic_data *p_data = 
 		(struct uet_nic_data *)nic->nic_priv_data;
@@ -188,7 +188,7 @@ static void uet_nic_release_umem(struct uet_umem *umem)
 	kfree(umem);
 }
 
-static int uet_nic_udptunnel_mr_reg(struct uet_nic *nic,
+static int uet_nic_raw_mr_reg(struct uet_nic *nic,
 		struct uet_mr_buf_desc *desc, uet_nic_mr_handle_t *handle)
 {
 	struct uet_nic_data *p_data = 
@@ -206,7 +206,7 @@ static int uet_nic_udptunnel_mr_reg(struct uet_nic *nic,
 	return 0;
 }
 
-static int uet_nic_udptunnel_mr_dereg(struct uet_nic *nic,
+static int uet_nic_raw_mr_dereg(struct uet_nic *nic,
 							uet_nic_mr_handle_t handle)
 {
 	struct uet_nic_data *p_data = 
@@ -218,7 +218,7 @@ static int uet_nic_udptunnel_mr_dereg(struct uet_nic *nic,
 	return 0;
 }
 
-static void uet_nic_udptunnel_finalize(struct uet_nic *nic)
+static void uet_nic_raw_finalize(struct uet_nic *nic)
 {
 	struct uet_nic_data *p_data = 
 		(struct uet_nic_data *)nic->nic_priv_data;
@@ -236,7 +236,7 @@ static void uet_nic_udptunnel_finalize(struct uet_nic *nic)
 	return;
 }
 
-static int uet_nic_udptunnel_initialize(struct uet_nic *nic)
+static int uet_nic_raw_initialize(struct uet_nic *nic)
 {
 	struct uet_nic_data *p_data = NULL;
 	unsigned long flag;
@@ -309,17 +309,17 @@ error:
 	return rc;
 }
 
-static int uet_nic_udptunnel_init(void)
+static int uet_nic_raw_init(void)
 {
-	uet_nic_getinfo_fn			= uet_nic_udptunnel_getinfo;
-	uet_nic_get_ipv4_nh_fn		= uet_nic_udptunnel_get_ipv4_nh;
-	uet_nic_tx_pkt_fn			= uet_nic_udptunnel_tx_pkt;
-	uet_nic_rx_pkt_fn			= uet_nic_udptunnel_rx_pkt;
-	uet_nic_rx_poll_fn			= uet_nic_udptunnel_rx_poll;
-	uet_nic_mr_reg_fn			= uet_nic_udptunnel_mr_reg;
-	uet_nic_mr_dereg_fn			= uet_nic_udptunnel_mr_dereg;
-	uet_nic_finalize_fn			= uet_nic_udptunnel_finalize;
-	uet_nic_initialize_fn		= uet_nic_udptunnel_initialize;
+	uet_nic_getinfo_fn			= uet_nic_raw_getinfo;
+	uet_nic_get_ipv4_nh_fn		= uet_nic_raw_get_ipv4_nh;
+	uet_nic_tx_pkt_fn			= uet_nic_raw_tx_pkt;
+	uet_nic_rx_pkt_fn			= uet_nic_raw_rx_pkt;
+	uet_nic_rx_poll_fn			= uet_nic_raw_rx_poll;
+	uet_nic_mr_reg_fn			= uet_nic_raw_mr_reg;
+	uet_nic_mr_dereg_fn			= uet_nic_raw_mr_dereg;
+	uet_nic_finalize_fn			= uet_nic_raw_finalize;
+	uet_nic_initialize_fn		= uet_nic_raw_initialize;
 
 	spin_lock_init(&rx_queue_lock);
 	INIT_LIST_HEAD(&rx_queue);
@@ -329,7 +329,7 @@ static int uet_nic_udptunnel_init(void)
 	return 0;
 }
 
-static void uet_nic_udptunnel_exit(void)
+static void uet_nic_raw_exit(void)
 {
 	unsigned long flag;
 	struct list_head *entry;
@@ -357,8 +357,8 @@ static void uet_nic_udptunnel_exit(void)
 	spin_unlock_irqrestore(&rx_queue_lock, flag);
 }
 
-module_init(uet_nic_udptunnel_init);
-module_exit(uet_nic_udptunnel_exit);
+module_init(uet_nic_raw_init);
+module_exit(uet_nic_raw_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_VERSION("0.1");

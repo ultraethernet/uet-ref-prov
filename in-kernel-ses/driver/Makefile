@@ -4,9 +4,9 @@ MDIR ?= ${PWD}
 
 obj-m += uet_core.o
 obj-m += uet_pds_gen.o
-obj-m += uet_nic_udptunnel.o
+obj-m += uet_nic_raw.o
 
-uet_nic_udptunnel-y := uet_nic/uet_nic_udptunnel.o
+uet_nic_raw-y := uet_nic/uet_nic_raw.o
 
 uet_core-y := uet_core/uet_core_main.o uet_core/uet_api_private.o uet_core/uet_nic.o uet_core/uet_pds_init.o
 
