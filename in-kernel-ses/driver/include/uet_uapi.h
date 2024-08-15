@@ -2,6 +2,8 @@
 #ifndef _UET_UAPI_H_
 #define _UET_UAPI_H_
 
+#include <linux/if.h>
+#include <linux/if_ether.h>
 #include "uet_addr.h"
 
 /* TODO: remove default job id when addr resolutions works */
@@ -182,11 +184,13 @@ enum uet_nic_state {
 	UET_NIC_STATE_UP,
 };
 
+#define UET_NET_TYPE_SIZE 32
+
 struct uet_nic_info {
-	char *name;
+	char name[IFNAMSIZ];
 	size_t mtu;
-	char *network_type;
-	char *mac_addr_str;
+	char network_type[UET_NET_TYPE_SIZE];
+	char mac_addr_str[ETH_ALEN * 3];
 	enum uet_nic_state state;
 };
 

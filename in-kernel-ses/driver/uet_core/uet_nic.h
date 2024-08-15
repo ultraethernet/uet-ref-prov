@@ -14,7 +14,6 @@
 #include "uet_uapi.h"
 
 #define UET_MAX_SYS_CMD_OCTETS  256
-#define UET_NET_TYPE_SIZE 32
 
 #define UET_NIC(uet) (&(uet)->nic)
 
@@ -31,7 +30,7 @@ struct uet_nic {
 	uint8_t mac_addr[ETH_ALEN];
 	char mac_addr_str[ETH_ALEN*3];
 
-	uint32_t ipv4_addr;                            /* host order */
+	__be32 ipv4_addr;                            /* host order */
 	char ip_addr_str[INET6_ADDRSTRLEN];            /* local addr */
 	char dst_ip_addr_str[INET6_ADDRSTRLEN];  /* destination addr */
 	char nh_ip_addr_str[INET6_ADDRSTRLEN];      /* next hop addr */
@@ -276,5 +275,20 @@ extern int (*uet_nic_mr_dereg_fn)(struct uet_nic *nic,
 extern void (*uet_nic_finalize_fn)(struct uet_nic *nic);
 extern int (*uet_nic_initialize_fn)(struct uet_nic *nic);
 
+#define UET_NIPQUAD(addr) \
+	((unsigned char *)&addr)[0], \
+	((unsigned char *)&addr)[1], \
+	((unsigned char *)&addr)[2], \
+	((unsigned char *)&addr)[3]
+
+#define UET_NIP6(addr) \
+	ntohs((addr).s6_addr16[0]), \
+	ntohs((addr).s6_addr16[1]), \
+	ntohs((addr).s6_addr16[2]), \
+	ntohs((addr).s6_addr16[3]), \
+	ntohs((addr).s6_addr16[4]), \
+	ntohs((addr).s6_addr16[5]), \
+	ntohs((addr).s6_addr16[6]), \
+	ntohs((addr).s6_addr16[7])
 
 #endif /* _UET_NIC_H_ */

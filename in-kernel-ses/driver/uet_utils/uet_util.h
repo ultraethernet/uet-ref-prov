@@ -102,7 +102,6 @@ static inline uint64_t uet_gettime(uint64_t *time_ms)
 {
 	return (*time_ms = jiffies);
 }
-void uet_mac_addr_to_str(char *mac_addr_str, uint8_t *mac_addr);
 void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str);
 char *uet_ses_rc_to_str(uet_ses_rc_t rc);
 void uet_print_mac_addr(uint8_t *mac);
@@ -252,6 +251,14 @@ static inline uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
 	}
 
 	return payload_len;
+}
+
+/* convert mac address to string */
+static inline void uet_mac_addr_to_str(char *mac_addr_str, uint8_t *mac_addr)
+{
+	sprintf(mac_addr_str, "%02x:%02x:%02x:%02x:%02x:%02x",
+		mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3],
+		mac_addr[4], mac_addr[5]);
 }
 
 #endif /* _UET_UTIL_H_ */
