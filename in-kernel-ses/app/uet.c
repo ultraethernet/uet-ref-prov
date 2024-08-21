@@ -67,7 +67,7 @@
 
 #include "uet_api.h"
 
-#define UET_NUM_ITERATIONS	100
+#define UET_NUM_ITERATIONS	2
 #define UET_MSG_SIZE		4096	/* in bytes */
 #define UET_NUM_BUFS		((size_t) 8)
 #define UET_DEFAULT_TAG		((uint64_t) 1)

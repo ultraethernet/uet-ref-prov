@@ -342,7 +342,7 @@ static int uet_domain_close_internal(uet_domain_handle_t domain_handle)
 	struct uet_ioctl_domain_close_args args;
 
 	args.in.domain_handle = domain_handle;
-	return ioctl(g_uet_dev_fd, UET_IOCTL_DOMAIN_CREATE, &args);
+	return ioctl(g_uet_dev_fd, UET_IOCTL_DOMAIN_CLOSE, &args);
 }
 
 int uet_domain_close(uet_domain_handle_t domain_handle)
@@ -551,26 +551,20 @@ static int uet_cq_read_internal(uet_cq_handle_t cq_handle,
 		void *buf, size_t count)
 {
 	int rc;
-	struct uet_ioctl_cq_read_args *args = 
-		malloc(sizeof(struct uet_ioctl_cq_read_args) + 
-				count * sizeof(struct uet_cq_entry));
+	struct uet_ioctl_cq_read_args args;
 
-	if (args == NULL)
-		return -ENOMEM;
-
-	args->in.cq_handle = cq_handle;
-	args->in.max_count = count;
-	rc = ioctl(g_uet_dev_fd, UET_IOCTL_CQ_READ, args);
+	args.in.cq_handle = cq_handle;
+	args.in.max_count = count;
+	rc = ioctl(g_uet_dev_fd, UET_IOCTL_CQ_READ, &args);
 	if (rc) {
 		UET_API_PRINT_ERRNO("ioctl");
 		return -1;
 	}
 
-	memcpy(buf, args->out.buf, 
-			args->out.count * sizeof(struct uet_cq_entry));
+	memcpy(buf, args.out.buf, 
+			args.out.count * sizeof(struct uet_cq_entry));
 
-	count = args->out.count;
-	free(args);
+	count = args.out.count;
 
 	return count;
 }
