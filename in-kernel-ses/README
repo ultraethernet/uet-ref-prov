@@ -1,0 +1,38 @@
+Steps to run the test -
+
+Compilation -
+git clone git@github.com:rabhunia-keysight/uet-linux-kernel-memmapped-q.git
+cd uet-linux-kernel-memmapped-q
+git checkout memmapped-queues
+git submodule update --init
+make O=.build uet_defconfig
+cd .build
+make -j$(nproc) bzImage modules && make -j$(nproc) modules_install INSTALL_MOD_PATH=$(pwd)/.modstage
+sudo brctl addbr brtest0
+sudo ifconfig brtest0 up
+cd ..
+git clone git@github.com:kingshukm-keysight/uet-ref-prov-kernel-ses.git
+wget https://github.com/ofiwg/libfabric/releases/download/v1.20.1/libfabric-1.20.1.tar.bz2
+tar -jxvf libfabric-1.20.1.tar.bz2
+ln -s libfabric-1.20.1 libfabric
+cd libfabric
+autoreconf
+./configure
+make -j
+cd ../uet-ref-prov-kernel-ses/in-kernel-ses/app
+make all
+cp -vrf uet ../../../uet-linux-kernel-memmapped-q/.build
+cd ../driver
+make all KDIR=../../../uet-linux-kernel-memmapped-q/.build
+cp -vrf uet_core.ko uet_nic_raw.ko uet_pds_gen.ko ../../../uet-linux-kernel-memmapped-q/.build
+cd ../../../uet-linux-kernel-memmapped-q/.build
+
+Start Capture -
+sudo tcpdump -i brtest0 -w /tmp/uet.pcap
+
+Run Server -
+sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.sh" QEMU_BRIDGE=brtest0 QEMU_INSTANCE=3 make tools/vmtest
+
+Run Client -
+sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.sh" QEMU_BRIDGE=brtest0 QEMU_INSTANCE=2 make tools/vmtest
+
