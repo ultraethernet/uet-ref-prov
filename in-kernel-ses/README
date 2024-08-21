@@ -36,3 +36,13 @@ sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.
 Run Client -
 sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.sh" QEMU_BRIDGE=brtest0 QEMU_INSTANCE=2 make tools/vmtest
 
+TODO List -
+1. Support for both SRQ and RRQ. Currently either SRQ or RRQ can be attached to an EP.
+2. Support for dynamic ARP resolution in uet_nic_raw.ko.
+3. Support for mapping memory allocated in userspace for DMA (while creating MR).
+4. Support for retry timeout and timers.
+5. BUG: retry with 100 msec retry timeout.
+6. Support for memory mapped SRQ / RRQ / CQ.
+7. Use of tasklet for processing incoming packet and work request posted in SRQ / RRQ. Currently it's done from the context of uet app.
+8. Code cleanup - remove unnecessary debug prints, log level, few other code re-organisations.
+
