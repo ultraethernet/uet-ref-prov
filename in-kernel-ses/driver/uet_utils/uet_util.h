@@ -99,9 +99,10 @@ struct uet_parsed_pkt {
 
 struct uet_instance; /* forward reference */
 
-static inline uint64_t uet_gettime(uint64_t *time_ms)
+static inline int uet_gettime(uint64_t *time_ms)
 {
-	return (*time_ms = jiffies);
+	*time_ms = jiffies;
+	return 0;
 }
 
 static inline void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str)
