@@ -12,7 +12,7 @@ uet_core-y := uet_core/uet_core_main.o uet_core/uet_api_private.o uet_core/uet_n
 
 uet_pds_gen-y := uet_pds/pds/uet_pds.o uet_pds/common/uet_sec.o uet_utils/bitmap.o
 
-ccflags-y := -Wall -Wno-unused-variable -Wno-implicit-fallthrough -I$(MDIR)/uet_core -I$(MDIR)/uet_utils -I$(MDIR)/uet_crypto -I$(MDIR)/uet_pds/common -I$(MDIR)/uet_pds/pds -I$(MDIR)/include
+ccflags-y := -Wall -Wno-error=format -Wno-unused-variable -Wno-implicit-fallthrough -I$(MDIR)/uet_core -I$(MDIR)/uet_utils -I$(MDIR)/uet_crypto -I$(MDIR)/uet_pds/common -I$(MDIR)/uet_pds/pds -I$(MDIR)/include
 
 all:
 	make -C $(KDIR) M=$(MDIR) modules

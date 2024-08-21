@@ -372,6 +372,8 @@ struct uet_ioctl_ep_close_args {
 	} out;
 };
 
+#define UET_IOCTL_CQ_READ_MAX 8 // FIXME:
+
 struct uet_ioctl_cq_read_args {
 	struct {
 		uet_cq_handle_t cq_handle;
@@ -380,7 +382,8 @@ struct uet_ioctl_cq_read_args {
 	struct {
 		int rc;
 		size_t count;
-		char buf[0];
+		// FIXME:
+		struct uet_cq_entry buf[UET_IOCTL_CQ_READ_MAX];
 	} out;
 };
 

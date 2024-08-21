@@ -420,7 +420,7 @@ static void uet_ipv4_ep_key_init(struct uet_ipv4_ep_key *key,
 	ses = (struct uet_ses_req_std *) pp->ses;
 
 	memset(key, 0, sizeof(struct uet_ipv4_ep_key));
-	key->ipv4_addr = ntohl(ipv4->daddr);
+	key->ipv4_addr = ipv4->daddr;
 	key->pid_on_fep =
 		(ntohs(ses->cmn.rsvd_pid_on_fep) & UET_SES_REQ_PID_ON_FEP_MASK)
 		>> UET_SES_REQ_PID_ON_FEP_SHIFT;
@@ -2013,8 +2013,11 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		buf_off = start_off;
 		if (((pp->ses_payload_len != req_len) &&
 		     (pp->ses_payload_len != max_payload_len)) ||
-		    (pp->ses_payload_len > pp->pkt_payload_len))
+		    (pp->ses_payload_len > pp->pkt_payload_len)) {
+			pr_info("[tmp][%s:%d] pp->ses_payload_len: %u pp->pkt_payload_len: %u max_payload_len: %u req_len: %u\n",
+				__func__, __LINE__, pp->ses_payload_len, pp->pkt_payload_len, max_payload_len, req_len);
 			invalid_payload_len = true;
+		}
 	} else {
 		/* set buffer offset and check payload length */
 		msg_off_payload_len = ntohll(ses->msg_off_payload_len);
@@ -2206,9 +2209,13 @@ static uet_ses_rc_t uet_rx_req_pkt(
 
 	/* check for message completion */
 	rx_desc->remaining_bytes -= pp->ses_payload_len;
-	if (rx_desc->remaining_bytes == 0)
+	pr_info("[%s:%d] remaining_bytes: %lu ses_payload_len: %d\n",
+		__func__, __LINE__, rx_desc->remaining_bytes, pp->ses_payload_len);
+	if (rx_desc->remaining_bytes == 0) {
 		/* post rx completion queue entry */
+		pr_info("uet: posting in recv cq.\n");
 		uet_rx_cq_post_entry(rx_desc);
+	}
 
 	return UET_RC_OK;
 }
@@ -2609,6 +2616,8 @@ static int uet_build_rd_rsp_ses_hdr(struct uet_tx_desc *tx_desc,
 					  UET_SES_RSP_JOB_ID_SHIFT);
 	ses->rsvd_payload_len = htonl(payload_len <<
 				      UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
+	pr_info("[%s][%d] rsvd_payload_len: %u payload_len: %lu\n",
+		__func__, __LINE__, ses->rsvd_payload_len, payload_len);
 	ses->mod_len = htonl(tx_desc->rd_rsp.mod_len);
 	ses->msg_off = htonl(tx_desc->remote_msg_off);
 
@@ -2803,6 +2812,7 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
 	ses->initiator = htonl(uet_ep->uet_addr.initiator_id);
 	ses->req_len = htonl((uint32_t) req_len);
+	pr_info("[%s:%d][TX] req_len: %lu\n", __func__, __LINE__, req_len);
 
 	return 0;
 }
@@ -3268,6 +3278,7 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 			uet_tx_cq_post_err(tx_desc, tx_desc->err_code);
 			break;
 		case UET_TX_DESC_STATE_COMPLETE:
+			pr_info("uet: posting in send cq.\n");
 			uet_tx_cq_post_entry(tx_desc);
 			break;
 		default:
@@ -4097,6 +4108,8 @@ ssize_t uet_cq_read_internal(uet_cq_handle_t cq_handle,
 					     ring);
 	}
 
+	pr_info("uet: cq read entry count: %lu\n", rd_count);
+
 	return rd_count;
 }
 
@@ -4158,6 +4171,7 @@ int uet_av_insert_internal(uet_domain_handle_t domain_handle,
 	struct uet_instance *uet;
 	struct uet_domain *uet_dom;
 	struct uet_av_entry *av_entry;
+	struct uet_addr *addr;
 
 	uet_dom = (struct uet_domain *) domain_handle;
 	uet = uet_dom->uet;
@@ -4168,6 +4182,10 @@ int uet_av_insert_internal(uet_domain_handle_t domain_handle,
 		return -ENOSYS;
 	}
 
+	addr = kcalloc(1, sizeof(struct uet_addr), GFP_KERNEL);
+	memcpy(addr, uet_addr, sizeof(struct uet_addr));
+	pr_info("uet: [%s] dst ip: %u.%u.%u.%u\n", __func__, UET_NIPQUAD(addr->fa.v4));
+
 	/* allocate memory for av object */
 	av_entry = kcalloc(1, sizeof(struct uet_av_entry), GFP_KERNEL);
 	if (av_entry == NULL) {
@@ -4176,8 +4194,8 @@ int uet_av_insert_internal(uet_domain_handle_t domain_handle,
 	}
 
 	/* initialize av entry */
-	av_entry->addr = uet_addr;
-	rc = uet_nic_get_ipv4_nh(UET_NIC(uet), uet_addr->fa.v4,
+	av_entry->addr = addr;
+	rc = uet_nic_get_ipv4_nh(UET_NIC(uet), addr->fa.v4,
 				 av_entry->nh_mac_addr);
 	if (rc == 0)
 		av_entry->flags |= UET_NH_MAC_ADDR_V;
@@ -4187,6 +4205,7 @@ int uet_av_insert_internal(uet_domain_handle_t domain_handle,
 	uet_av_entry_insert(uet_dom, av_entry);
 
 	*addr_handle = av_entry;
+	pr_info("uet: [%s] av_entry: %llx\n", __func__, (uint64_t )av_entry);
 	return 0;
 }
 

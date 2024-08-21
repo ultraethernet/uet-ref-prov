@@ -40,6 +40,7 @@ static int uet_open(struct inode *inode, struct file *filp)
 	struct uet_dev *dev;
 	int rc = -EBUSY;
 
+	pr_info("uet: (IN) %s\n", __func__);
 	dev = container_of(inode->i_cdev, struct uet_dev, cdev);
 
 	down(&dev->sem);
@@ -59,6 +60,7 @@ static int uet_open(struct inode *inode, struct file *filp)
 
 exit:
 	up(&dev->sem);
+	pr_info("uet: (OUT) %s rc = %d\n", __func__, rc);
 
 	return rc;
 }
@@ -67,6 +69,7 @@ static int uet_release(struct inode *inode, struct file *filp)
 {
 	struct uet_dev *dev = (struct uet_dev *) filp->private_data;
 
+	pr_info("uet: (IN) %s\n", __func__);
 	down(&dev->sem);
 
 	if (dev->uet == NULL) {
@@ -77,15 +80,45 @@ static int uet_release(struct inode *inode, struct file *filp)
 	}
 
 	up(&dev->sem);
+	pr_info("uet: (OUT) %s\n", __func__);
 
 	return 0;
 }
+
+static const char *const ioctl_str[] = {
+	[UET_IOCTL_INSTANCE_CREATE]		= "UET_IOCTL_INSTANCE_CREATE",
+	[UET_IOCTL_INSTANCE_FINALIZE]		= "UET_IOCTL_INSTANCE_FINALIZE",
+	[UET_IOCTL_NIC_GET_INFO]		= "UET_IOCTL_NIC_GET_INFO",
+	[UET_IOCTL_NIC_GET_ADDR_IPV4]		= "UET_IOCTL_NIC_GET_ADDR_IPV4",
+	[UET_IOCTL_DOMAIN_CREATE]		= "UET_IOCTL_DOMAIN_CREATE",
+	[UET_IOCTL_DOMAIN_CLOSE]		= "UET_IOCTL_DOMAIN_CLOSE",
+	[UET_IOCTL_EP_CREATE]			= "UET_IOCTL_EP_CREATE",
+	[UET_IOCTL_EP_GET_NAME]			= "UET_IOCTL_EP_GET_NAME",
+	[UET_IOCTL_EP_BIND_CQ]			= "UET_IOCTL_EP_BIND_CQ",
+	[UET_IOCTL_EP_ENABLE]			= "UET_IOCTL_EP_ENABLE",
+	[UET_IOCTL_EP_CLOSE]			= "UET_IOCTL_EP_CLOSE",
+	[UET_IOCTL_CQ_READ]			= "UET_IOCTL_CQ_READ",
+	[UET_IOCTL_CQ_READERR]			= "UET_IOCTL_CQ_READERR",
+	[UET_IOCTL_CQ_CLOSE]			= "UET_IOCTL_CQ_CLOSE",
+	[UET_IOCTL_AV_INSERT]			= "UET_IOCTL_AV_INSERT",
+	[UET_IOCTL_AV_REMOVE]			= "UET_IOCTL_AV_REMOVE",
+	[UET_IOCTL_MR_REG]			= "UET_IOCTL_MR_REG",
+	[UET_IOCTL_MR_KEY]			= "UET_IOCTL_MR_KEY",
+	[UET_IOCTL_MR_BIND_EP]			= "UET_IOCTL_MR_BIND_EP",
+	[UET_IOCTL_MR_ENABLE]			= "UET_IOCTL_MR_ENABLE",
+	[UET_IOCTL_MR_CLOSE]			= "UET_IOCTL_MR_CLOSE",
+	[UET_IOCTL_REQ_SEND]			= "UET_IOCTL_REQ_SEND",
+	[UET_IOCTL_REQ_RECV]			= "UET_IOCTL_REQ_RECV",
+};
 
 static long uet_ioctl(struct file *filp, unsigned int cmd, 
 					  unsigned long arg)
 {
 	struct uet_dev *dev = (struct uet_dev *) filp->private_data;
 	int rc = 0;
+
+	if (cmd != UET_IOCTL_CQ_READ)
+		pr_info("uet: (IN) %s %s\n", __func__, ioctl_str[cmd]);
 
 	switch (cmd) {
 		case UET_IOCTL_INSTANCE_CREATE:
@@ -400,7 +433,6 @@ static long uet_ioctl(struct file *filp, unsigned int cmd,
 			{
 				struct uet_ioctl_cq_read_args args;
 				size_t count;
-				char *buf;
 
 				if (copy_from_user(&args, (void *)arg,
 					sizeof(struct uet_ioctl_cq_read_args))) {
@@ -408,18 +440,15 @@ static long uet_ioctl(struct file *filp, unsigned int cmd,
 					goto exit;
 				}
 
-				buf = kmalloc(
-					args.out.count * sizeof(struct uet_cq_entry), 
-					GFP_KERNEL);
-				if (buf == NULL) {
-					rc = -ENOMEM;
+				if (args.in.max_count > UET_IOCTL_CQ_READ_MAX) {
+					rc = -EINVAL;
 					goto exit;
 				}
 
 				down(&dev->sem);
 
 				count = uet_cq_read_internal(args.in.cq_handle,
-						buf, args.out.count);
+						&args.out.buf[0], args.in.max_count);
 				if (count < 0) {
 					pr_err("uet: cq_read failed.\n");
 					up(&dev->sem);
@@ -430,19 +459,10 @@ static long uet_ioctl(struct file *filp, unsigned int cmd,
 					args.out.rc = 0;
 					if (copy_to_user((void *)arg, &args,
 						sizeof(struct uet_ioctl_cq_read_args))) {
+						pr_info("uet: %s:%d copy_to_user failed.\n", __func__, __LINE__);
 						rc = -EFAULT;
-						kfree(buf);
 						goto exit;
 					}
-
-					if (copy_to_user((void *)&args.out.buf[0], buf, 
-							count * sizeof(struct uet_cq_entry))) {
-						rc = -EFAULT;
-						kfree(buf);
-						goto exit;
-					}
-
-					kfree(buf);
 				}
 			}
 			break;
@@ -789,9 +809,13 @@ static long uet_ioctl(struct file *filp, unsigned int cmd,
 			break;
 	}
 
+	if (cmd != UET_IOCTL_CQ_READ)
+		pr_info("uet: (OUT) %s\n", __func__);
+
 	return 0;
 
 exit:
+	pr_info("uet: (OUT) %s rc = %d\n", __func__, rc);
 	return rc;
 }
 

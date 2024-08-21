@@ -42,6 +42,8 @@ static int uet_pkt_receiver(struct sk_buff *skb)
 	struct list_head *entry;
 	struct uet_rx_queue *queue = NULL;
 
+	pr_info("uet: received uet packet.\n");
+
 	spin_lock_irqsave(&rx_queue_lock, flags);
 	list_for_each(entry, &rx_queue) {
 		struct uet_rx_queue *tmp = 
@@ -55,7 +57,7 @@ static int uet_pkt_receiver(struct sk_buff *skb)
 	if (queue) {
 		skb_queue_tail(&queue->pkts, skb);
 	} else {
-		pr_debug("uet_nic: No UET NIC found.\n");
+		pr_info("uet_nic: No UET NIC found.\n");
 		kfree_skb(skb);
 	}
 
@@ -101,9 +103,9 @@ static int uet_nic_raw_get_ipv4_nh(struct uet_nic *nic,
 	struct uet_nic_data *p_data =
 		(struct uet_nic_data *)nic->nic_priv_data;
 	struct neighbour *n;
+	uint32_t key = htonl(dst_ip);
 
-	rcu_read_lock();
-	n = neigh_lookup(&arp_tbl, &dst_ip, p_data->queue.dev);
+	n = neigh_lookup(&arp_tbl, &key, p_data->queue.dev);
 	if (!n) {
 		// FIXME: resolve address
 		pr_err("uet_nic: neigh_lookup failed for %u.%u.%u.%u.\n",
@@ -112,7 +114,6 @@ static int uet_nic_raw_get_ipv4_nh(struct uet_nic *nic,
 	}
 	memcpy(mac, n->ha, ETH_ALEN);
 	neigh_release(n);
-	rcu_read_unlock();
 
 	return 0;
 }
@@ -157,17 +158,28 @@ static int uet_nic_raw_rx_pkt(struct uet_nic *nic,
 		(struct uet_nic_data *)nic->nic_priv_data;
 	struct sk_buff *skb = skb_dequeue(&p_data->queue.pkts);
 
-	skb_copy_bits(skb, 0, pkt, skb->len);
+	pr_info("uet_nic: [%s] pkt len: %d. skb->data_len: %d (%d:%d:%d)\n", __func__, 
+		skb->len + skb->transport_header, 
+		skb->data_len, skb->transport_header, skb->network_header, skb->mac_header);
+
+	memcpy(pkt, skb_mac_header(skb), 
+		skb->len + skb->transport_header - skb->mac_header);
+	*rx_pkt_size = skb->len + skb->transport_header - skb->mac_header;
+
 	kfree_skb(skb);
 
-	return 0;
+	return 1;
 }
 
 static int uet_nic_raw_rx_poll(struct uet_nic *nic)
 {
 	struct uet_nic_data *p_data = 
 		(struct uet_nic_data *)nic->nic_priv_data;
-	return !!__skb_peek(&p_data->queue.pkts);
+	int available = !!skb_peek(&p_data->queue.pkts);
+
+	//pr_info("uet_nic: [%s] available = %d.\n", __func__, available);
+
+	return available;
 }
 
 static struct uet_umem *
@@ -199,6 +211,7 @@ static int uet_nic_raw_mr_reg(struct uet_nic *nic,
 		pr_err("uet_nic: Only CONTIG memory is supported.\n");
 		return -EINVAL;
 	}
+
 	umem = uet_nic_get_umem(desc->buf, desc->len, desc->type);
 	*handle = umem;
 	desc->contig.dma_addr = (uet_dma_addr_t) umem->addr;

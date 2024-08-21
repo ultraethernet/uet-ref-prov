@@ -129,6 +129,482 @@ struct uet_pds_state {
 
 static struct uet_pds_state pds_state;
 
+/* convert ses return code to string */
+char *uet_ses_rc_to_str(uet_ses_rc_t rc)
+{
+	char *s;
+
+	switch (rc) {
+	case UET_RC_NULL:
+		s = "UET_RC_NULL";
+		break;
+	case UET_RC_OK:
+		s = "UET_RC_OK";
+		break;
+	case UET_RC_BAD_GENERATION:
+		s = "UET_RC_BAD_GENERATION";
+		break;
+	case UET_RC_DISABLED:
+		s = "UET_RC_DISABLED";
+		break;
+	case UET_RC_DISABLED_GEN:
+		s = "UET_RC_DISABLED_GEN";
+		break;
+	case UET_RC_NO_MATCH:
+		s = "UET_RC_NO_MATCH";
+		break;
+	case UET_RC_UNSUPPORTED_OP:
+		s = "UET_RC_UNSUPPORTED_OP";
+		break;
+	case UET_RC_UNSUPPORTED_SIZE:
+		s = "UET_RC_UNSUPPORTED_SIZE";
+		break;
+	case UET_RC_AT_INVALID:
+		s = "UET_RC_AT_INVALID";
+		break;
+	case UET_RC_AT_PERM:
+		s = "UET_RC_AT_PERM";
+		break;
+	case UET_RC_AT_ATS_ERROR:
+		s = "UET_RC_AT_ATS_ERROR";
+		break;
+	case UET_RC_AT_NO_TRANS:
+		s = "UET_RC_AT_NO_TRANS";
+		break;
+	case UET_RC_AT_OUT_OF_RANGE:
+		s = "UET_RC_AT_OUT_OF_RANGE";
+		break;
+	case UET_RC_HOST_POISONED:
+		s = "UET_RC_HOST_POISONED";
+		break;
+	case UET_RC_HOST_UNSUCCESS_CMPL:
+		s = "UET_RC_HOST_UNSUCCESS_CMPL";
+		break;
+	case UET_RC_AMO_UNSUPPORTED_OP:
+		s = "UET_RC_AMO_UNSUPPORTED_OP";
+		break;
+	case UET_RC_AMO_UNSUPPORTED_DT:
+		s = "UET_RC_AMO_UNSUPPORTED_DT";
+		break;
+	case UET_RC_AMO_UNSUPPORTED_SIZE:
+		s = "UET_RC_AMO_UNSUPPORTED_SIZE";
+		break;
+	case UET_RC_AMO_UNALIGNED:
+		s = "UET_RC_AMO_UNALIGNED";
+		break;
+	case UET_RC_AMO_FP_NAN:
+		s = "UET_RC_AMO_FP_NAN";
+		break;
+	case UET_RC_AMO_FP_UNDERFLOW:
+		s = "UET_RC_AMO_FP_UNDERFLOW";
+		break;
+	case UET_RC_AMO_FP_OVERFLOW:
+		s = "UET_RC_AMO_FP_OVERFLOW";
+		break;
+	case UET_RC_AMO_FP_INEXACT:
+		s = "UET_RC_AMO_FP_INEXACT";
+		break;
+	case UET_RC_PERM_VIOLATION:
+		s = "UET_RC_PERM_VIOLATION";
+		break;
+	case UET_RC_OP_VIOLATION:
+		s = "UET_RC_OP_VIOLATION";
+		break;
+	case UET_RC_BAD_INDEX:
+		s = "UET_RC_BAD_INDEX";
+		break;
+	case UET_RC_BAD_PID:
+		s = "UET_RC_BAD_PID";
+		break;
+	case UET_RC_BAD_JOB_ID:
+		s = "UET_RC_BAD_JOB_ID";
+		break;
+	case UET_RC_BAD_MKEY:
+		s = "UET_RC_BAD_MKEY";
+		break;
+	case UET_RC_BAD_ADDR:
+		s = "UET_RC_BAD_ADDR";
+		break;
+	case UET_RC_CANCELLED:
+		s = "UET_RC_CANCELLED";
+		break;
+	case UET_RC_UNDELIVERABLE:
+		s = "UET_RC_UNDELIVERABLE";
+		break;
+	case UET_RC_UNCOR:
+		s = "UET_RC_UNCOR";
+		break;
+	case UET_RC_UNCOR_TRNSNT:
+		s = "UET_RC_UNCOR_TRNSNT";
+		break;
+	case UET_RC_TOO_LONG:
+		s = "UET_RC_TOO_LONG";
+		break;
+	case UET_RC_INITIATOR_ERR:
+		s = "UET_RC_INITIATOR_ERR";
+		break;
+	case UET_RC_DROPPED:
+		s = "UET_RC_DROPPED";
+		break;
+	case UET_RC_DEFER_SEND:
+		s = "UET_RC_DEFER_SEND";
+		break;
+	default:
+		s = "UNKNOWN";
+		break;
+	}
+
+	return s;
+}
+
+/* print mac address */
+void uet_print_mac_addr(uint8_t *mac)
+{
+	printk("%.2x:%.2x:%.2x:%.2x:%.2x:%.2x\n",
+	       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+/* print ipv4 address */
+void uet_print_ipv4_addr(uint32_t ipv4_addr)
+{
+	printk("%d.%d.%d.%d\n",
+	       (ipv4_addr >> 24) & 0xff, (ipv4_addr >> 16) & 0xff,
+	       (ipv4_addr >> 8)  & 0xff, ipv4_addr & 0xff);
+}
+
+/* print uet address */
+void uet_print_uet_addr(struct uet_addr *uet_addr)
+{
+	char ip_addr_str[INET_ADDRSTRLEN];
+
+	uet_ipv4_addr_to_str(uet_addr->fa.v4, ip_addr_str);
+
+	printk("UET Address\n");
+	printk("  IP Address:      %s\n", ip_addr_str);
+	printk("  PIDonFEP:        %u\n", uet_addr->pid_on_fep);
+	printk("  Index:           %u\n", uet_addr->start_index);
+	printk("  Initiator ID:    %u\n", uet_addr->initiator_id);
+	printk("  Profiles:      ");
+	if (uet_addr->fep_cap & UET_FEP_CAP_AI_MIN)
+		printk("  AI Min");
+	if (uet_addr->fep_cap & UET_FEP_CAP_AI_FULL)
+		printk("  AI Full");
+	if (uet_addr->fep_cap & UET_FEP_CAP_HPC)
+		printk("  HPC");
+	printk("\n");
+}
+
+/* print mac header */
+void uet_print_mac_hdr(struct ethhdr *eth)
+{
+	printk("  MAC Header (%lu)\n", sizeof(struct ethhdr));
+	printk("    Destination MAC Addr: ");
+	uet_print_mac_addr(eth->h_dest);
+	printk("    Source MAC Addr:      ");
+	uet_print_mac_addr(eth->h_source);
+	printk("    Ethertype:            0x%.4x\n", ntohs(eth->h_proto));
+}
+
+/* print ipv4 header */
+void uet_print_ipv4_hdr(struct iphdr *ipv4)
+{
+	printk("  IPv4 Header (%lu)\n", sizeof(struct iphdr));
+	printk("    IP Version:           %u\n", ipv4->version);
+	printk("    IHL:                  %u\n", ipv4->ihl);
+	printk("    TOS:                  0x%x\n", ipv4->tos);
+	printk("    Tot Len:              %u\n", ntohs(ipv4->tot_len));
+	printk("    ID:                   %u\n", ntohs(ipv4->id));
+	printk("    Frag Offset:          0x%x\n", ntohs(ipv4->frag_off));
+	printk("    TTL:                  %u\n", ipv4->ttl);
+	printk("    Protocol:             0x%x\n", ipv4->protocol);
+	printk("    Checksum:             0x%x\n", ntohs(ipv4->check));
+	printk("    Destination Addr:     ");
+	uet_print_ipv4_addr(ntohl(ipv4->daddr));
+	printk("    Source Addr:          ");
+	uet_print_ipv4_addr(ntohl(ipv4->saddr));
+}
+
+/* print uet header */
+void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
+{
+	uint8_t opcode, gen, rc;
+	uint16_t pds_type, index, pid_on_fep;
+	uint16_t psn_off, spdcid, dpdcid;
+	uint32_t psn, job_id;
+	uint64_t msg_off, payload_len;
+	bool eom, som, hd;
+	struct uet_ses_req_std *ses_req_std;
+	struct uet_ses_rsp *ses_rsp;
+	struct uet_ses_rsp_d *ses_rsp_d;
+
+	if (pp->sec) {
+		printk("  USP Header (%d)\n", pp->sec_len);
+		printk("    USP AN:               %d\n", pp->sec_an);
+		printk("    USP SDI:              0x%08x\n", pp->sec_sdi);
+		if (pp->sec_ssi_valid) {
+			printk("    USP SSI:              0x%08x\n",
+			        pp->sec_ssi);
+		}
+		printk("    USP TSC:              0x%016lx\n", pp->sec_tsc);
+	}
+
+	printk("  PDS Header (%d)\n", pp->pds_len);
+	printk("    PDS Packet Type:      ");
+
+	switch (pp->pds_type) {
+	case UET_PDS_TYPE_ROD_REQ:
+	case UET_PDS_TYPE_RUD_REQ:
+		printk("%s Request\n",
+		       (pp->pds_type == UET_PDS_TYPE_ROD_REQ) ? "ROD" : "RUD");
+		break;
+	case UET_PDS_TYPE_RUDI_REQ:
+		printk("RUDI Request\n");
+		break;
+	case UET_PDS_TYPE_RUDI_RESP:
+		printk("RUDI Response\n");
+		break;
+	case UET_PDS_TYPE_UUD_REQ:
+		printk("UUD Request\n");
+		break;
+	case UET_PDS_TYPE_ACK:
+		printk("ACK\n");
+		break;
+	case UET_PDS_TYPE_NACK:
+		printk("NACK\n");
+		break;
+	case UET_PDS_TYPE_CTRL:
+		printk("CTRL\n");
+		break;
+	default:
+		printk("Unknown (0x%x)\n", pp->pds_type);
+		return;
+	}
+
+	printk("    PDS Next Header:      ");
+	switch (pp->next_hdr) {
+	case UET_HDR_REQ_SMALL:
+		printk("SES Standard Request Small\n");
+		break;
+	case UET_HDR_REQ_MEDIUM:
+		printk("SES Standard Request Medium\n");
+		break;
+	case UET_HDR_REQ_STD:
+		printk("SES Standard Request\n");
+		break;
+	case UET_HDR_RSP:
+		printk("SES Response\n");
+		break;
+	case UET_HDR_RSP_DATA:
+		printk("SES Response with Data\n");
+		break;
+	case UET_HDR_RSP_DATA_SMALL:
+		printk("SES Response with Data Small\n");
+		break;
+	default:
+		printk("Unknown (0x%x)\n", pp->next_hdr);
+		return;
+	}
+
+	printk("    PDS Flags:            0x%02x\n", pp->pds_flags);
+	printk("    PDS PSN:              %u\n", pp->pds_psn);
+	printk("    PDS Source PDCID:     %u\n", pp->pds_spdcid);
+
+	if ((pp->next_hdr == UET_HDR_REQ_SMALL) ||
+	    (pp->next_hdr == UET_HDR_REQ_MEDIUM) ||
+	    (pp->next_hdr == UET_HDR_REQ_STD)) {
+		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)
+			printk("    PDS SYN Offset:       %u\n", pp->pds_syn_off);
+		else
+			printk("    PDS Dest PDCID:       %u\n", pp->pds_dpdcid);
+		printk("    PDS Clear PSN:        %u\n", pp->pds_clear_fwd_psn);
+	} else if ((pp->next_hdr == UET_HDR_RSP_DATA) ||
+		   (pp->next_hdr == UET_HDR_RSP_DATA_SMALL)) {
+		printk("    PDS Dest PDCID:       %u\n", pp->pds_dpdcid);
+		printk("    PDS Forward PSN:      %u\n", pp->pds_clear_fwd_psn);
+	} else { /* UET_HDR_RSP */
+		printk("    PDS Dest PDCID:       %u\n", pp->pds_dpdcid);
+	}
+
+	printk("  SES Header (%d)\n", pp->ses_len);
+	switch (pp->next_hdr) {
+	case UET_HDR_REQ_STD:
+		printk("    SES Opcode:           ");
+		ses_req_std = (struct uet_ses_req_std *) pp->ses;
+		opcode = ((ses_req_std->cmn.eom_opcode &
+			   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
+		if (ses_req_std->cmn.eom_opcode & UET_SES_EOM_MASK)
+			eom = true;
+		else
+			eom = false;
+		if (ses_req_std->cmn.ver_flags & UET_SES_REQ_FLAG_SOM)
+			som = true;
+		else
+			som = false;
+		if (ses_req_std->cmn.ver_flags & UET_SES_REQ_FLAG_HD)
+			hd = true;
+		else
+			hd = false;
+
+		switch (opcode) {
+		case UET_SEND:
+			printk("SEND, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_DEFER_SEND:
+			printk("DEFERRED SEND, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_TAGGED_SEND:
+			printk("TAGGED SEND, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_DEFER_TSEND:
+			printk("DEFERRED TAGGED SEND, SOM = %d, EOM = %d\n",
+			       som, eom);
+			break;
+		case UET_DEFER_RTR:
+			printk("DEFERRED RTR, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_WRITE:
+			printk("WRITE, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_READ:
+			printk("READ, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		default:
+			printk("Unknown (0x%x), SOM = %d, EOM = %d\n",
+			       opcode, som, eom);
+			return;
+		}
+		printk("    SES Flags:            0x%x\n",
+		       ses_req_std->cmn.ver_flags);
+		index = ((ntohs(ses_req_std->cmn.rsvd_res_index) &
+			  UET_SES_REQ_RES_INDEX_MASK) >>
+			 UET_SES_REQ_RES_INDEX_SHIFT);
+		printk("    SES Index:            %u\n", index);
+		job_id = ((ntohl(ses_req_std->cmn.index_gen_job_id) &
+			   UET_SES_REQ_JOB_ID_MASK) >>
+			  UET_SES_REQ_JOB_ID_SHIFT);
+		printk("    SES Job ID:           %u\n", job_id);
+		gen = (uint8_t)((ntohl(ses_req_std->cmn.index_gen_job_id) &
+				 UET_SES_REQ_INDEX_GEN_MASK) >>
+				UET_SES_REQ_INDEX_GEN_SHIFT);
+		printk("    SES Generation:       %u\n", gen);
+		pid_on_fep = ((ntohl(ses_req_std->cmn.rsvd_pid_on_fep) &
+			       UET_SES_REQ_PID_ON_FEP_MASK) >>
+			      UET_SES_REQ_PID_ON_FEP_SHIFT);
+		printk("    SES PIDonFEP:         %u\n", pid_on_fep);
+		printk("    SES Message ID:       %u\n", pp->ses_msg_id);
+		printk("    SES Initiator ID:     %u\n",
+		       ntohl(ses_req_std->initiator));
+		printk("    SES Request Length:   %u\n",
+		       ntohl(ses_req_std->req_len));
+		if ((opcode != UET_DEFER_SEND) && (opcode != UET_DEFER_TSEND))
+			printk("    SES Buffer Offset:    %lu\n",
+			       ntohll(ses_req_std->buf_off));
+		else
+			printk("    SES Restart Token:    0x%016lx\n",
+			       ntohll(ses_req_std->restart_token));
+		if (som && hd)
+			printk("    SES Header Data:      %lu\n",
+			       ntohll(ses_req_std->cmpl_data));
+		else if (!som) {
+			msg_off = (ntohll(ses_req_std->msg_off_payload_len)
+				   & UET_SES_REQ_STD_MSG_OFF_MASK) >>
+				  UET_SES_REQ_STD_MSG_OFF_SHIFT;
+			payload_len =
+				(ntohll(ses_req_std->msg_off_payload_len) &
+				 UET_SES_REQ_STD_PAYLOAD_LEN_MASK) >>
+				UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT;
+			printk("    SES Message Offset:   %lu\n", msg_off);
+			printk("    SES Payload Length:   %lu\n", payload_len);
+		}
+		if (opcode != UET_DEFER_RTR)
+			printk("    SES Match Bits:       0x%lx\n",
+			       ntohll(ses_req_std->match_bits));
+		else
+			printk("    SES RTR Token:        0x%016lx\n",
+			       ntohll(ses_req_std->restart_token_rtr));
+		break;
+	case UET_HDR_RSP:
+		printk("    SES Opcode:           ");
+		ses_rsp = (struct uet_ses_rsp *) pp->ses;
+		opcode = ((ses_rsp->cmn.list_opcode &
+			   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
+		switch (opcode) {
+		case UET_RESPONSE:
+			printk("RESPONSE\n");
+			break;
+		default:
+			printk("Unknown (0x%x)\n", opcode);
+			return;
+		}
+		rc = ((ses_rsp->cmn.ver_ret_code &
+		       UET_SES_RSP_RET_CODE_MASK) >>
+		      UET_SES_RSP_RET_CODE_SHIFT);
+		printk("    SES Return Code:      %u (%s)\n",
+		       rc, uet_ses_rc_to_str(rc));
+		gen = (uint8_t)((ntohl(ses_rsp->cmn.index_gen_job_id) &
+				 UET_SES_RSP_INDEX_GEN_MASK) >>
+				UET_SES_RSP_INDEX_GEN_SHIFT);
+		printk("    SES Generation:       %u\n", gen);
+		job_id = ((ntohl(ses_rsp->cmn.index_gen_job_id) &
+			   UET_SES_RSP_JOB_ID_MASK) >>
+			  UET_SES_RSP_JOB_ID_SHIFT);
+		printk("    SES Job ID:           %u\n", job_id);
+		printk("    SES Message ID:       %u\n", pp->ses_msg_id);
+		printk("    SES Modified Length:  %u\n",
+		       ntohl(ses_rsp->mod_len));
+		break;
+	case UET_HDR_RSP_DATA:
+		ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
+		printk("    SES Opcode:           ");
+		opcode = ((ses_rsp_d->cmn.list_opcode &
+			   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
+		switch (opcode) {
+		case UET_RESPONSE_W_DATA:
+			printk("RESPONSE WITH DATA\n");
+			break;
+		default:
+			printk("Unknown (0x%x)\n", opcode);
+			return;
+		}
+		rc = ((ses_rsp_d->cmn.ver_ret_code &
+		       UET_SES_RSP_RET_CODE_MASK) >>
+		      UET_SES_RSP_RET_CODE_SHIFT);
+		printk("    SES Return Code:      %u\n", rc);
+		gen = (uint8_t)
+			((ntohl(ses_rsp_d->cmn.index_gen_job_id) &
+			  UET_SES_RSP_INDEX_GEN_MASK) >>
+			 UET_SES_RSP_INDEX_GEN_SHIFT);
+		printk("    SES Generation:       %u\n", gen);
+		job_id = ((ntohl(ses_rsp_d->cmn.index_gen_job_id) &
+			   UET_SES_RSP_JOB_ID_MASK) >>
+			  UET_SES_RSP_JOB_ID_SHIFT);
+		printk("    SES Job ID:           %u\n", job_id);
+		printk("    SES Message ID:       %u\n", pp->ses_msg_id);
+		printk("    SES Modified Length:  %u\n",
+		       ntohl(ses_rsp_d->mod_len));
+		printk("    SES Message Offset:   %u\n",
+		       ntohl(ses_rsp_d->msg_off));
+		printk("    SES Payload Length:   %u\n",
+		       (ntohl(ses_rsp_d->rsvd_payload_len) &
+			UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
+		       UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
+		break;
+	default:
+		break;
+	}
+}
+
+/* print packet headers */
+void uet_print_pkt_hdrs(struct uet_parsed_pkt *pp)
+
+{
+	printk("UET Packet Headers (pkt_len=%d)\n", pp->pkt_len);
+	uet_print_mac_hdr((struct ethhdr *) pp->eth);
+	uet_print_ipv4_hdr((struct iphdr *) pp->ip); /* TODO: IPv6 support */
+	uet_print_uet_hdr(pp);
+}
+
+
 #define PDS_GO()                                          \
 	do {                                              \
 		if (pds_state.ready != true) {            \
@@ -181,7 +657,10 @@ static struct uet_pds_state pds_state;
 		    (msg),                                       \
 		    (pp)->pkt_len)
 
-//#define UET_PDS_PKT_HDR_TRACE_ENABLED
+static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp, 
+		  uint16_t uet_udp_port, size_t max_payload_len);
+
+#define UET_PDS_PKT_HDR_TRACE_ENABLED
 
 #ifdef UET_PDS_PKT_HDR_TRACE_ENABLED
 #define UET_PDS_PKT_HDR_TRACE(UET, PP, PKT, PKT_LEN, MSG)            \
@@ -193,14 +672,14 @@ static struct uet_pds_state pds_state;
 					  (UET)->uet_udp_port,       \
 					  (UET)->max_payload_len) == \
 			    0) {                                     \
-				printf("\n%s\n\n", (MSG));           \
+				printk("\n%s\n\n", (MSG));           \
 				uet_print_pkt_hdrs((&_pp));          \
-				printf("\n");                        \
+				printk("\n");                        \
 			}                                            \
 		} else {                                             \
-			printf("\n%s\n\n", (MSG));                   \
+			printk("\n%s\n\n", (MSG));                   \
 			uet_print_pkt_hdrs((PP));                    \
-			printf("\n");                                \
+			printk("\n");                                \
 		}                                                    \
 	} while (0)
 #else
@@ -602,6 +1081,9 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 			(ntohl(ses_rsp_d->rsvd_payload_len) &
 			 UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
 			UET_SES_RSP_D_PAYLOAD_LEN_SHIFT;
+		pr_info("[%s][%d] rsvd_payload_len: %u ses_payload_len: %u\n",
+			__func__, __LINE__, ses_rsp_d->rsvd_payload_len, 
+			pp->ses_payload_len);
 		rc = uet_parse_chk_next_field(pp, cur_len, pp->ses_payload_len);
 		if (rc != 0)
 			return rc;
@@ -1279,9 +1761,12 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	PDS_GO();
 
+	pr_info("uet: [%s] dst_addr_handle: %llx\n", __func__, (uint64_t)dst_addr_handle);
+
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *)dst_addr_handle;
 	dst_addr = av_entry->addr;
+	pr_info("uet: [%s] dst_addr_handle: %u.%u.%u.%u\n", __func__, UET_NIPQUAD(dst_addr->fa.v4));
 
 	switch (mode) {
 	case UET_PDS_MODE_RUD:
@@ -1443,7 +1928,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	uet_build_ipv4_hdr((struct iphdr *)(pdc_pkt->pkt +
 					    sizeof(struct ethhdr)),
 			   htonl(dst_addr->fa.v4),
-			   htonl(uet_ep->ipv4_addr),
+			   uet_ep->ipv4_addr,
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
 			   uet_ep->msg_ip_tos);
 
@@ -1475,10 +1960,10 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %u tx_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->tx_bm);
+		//bm_print_bits(pdc->tx_bm);
 		UET_PDS_DBG("PDC %u ack_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->ack_bm);
+		//bm_print_bits(pdc->ack_bm);
 	}
 
 	/* insert the packet to the end of the timeout queue */
@@ -2103,10 +2588,10 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d tx_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->tx_bm);
+		//bm_print_bits(pdc->tx_bm);
 		UET_PDS_DBG("PDC %d ack_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->ack_bm);
+		//bm_print_bits(pdc->ack_bm);
 	}
 
 	pdc_pkt->tx_pkt_acked = true;
@@ -2183,7 +2668,7 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d rx_bm (base %u):",
 			    pdc->pdc_id, pdc->rx_bm_base_psn);
-		bm_print_bits(pdc->rx_bm);
+		//bm_print_bits(pdc->rx_bm);
 	}
 
 	if (pp->pds_type == UET_PDS_TYPE_RUD_REQ) {
@@ -2299,7 +2784,7 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d rx_bm (base %u):",
 			    pdc->pdc_id, pdc->rx_bm_base_psn);
-		bm_print_bits(pdc->rx_bm);
+		//bm_print_bits(pdc->rx_bm);
 	}
 
 	if (pp->pds_type == UET_PDS_TYPE_RUD_REQ) {

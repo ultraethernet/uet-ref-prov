@@ -13,6 +13,7 @@
 #include <linux/ip.h>
 
 #include "uet_addr.h"
+#include "uet_nic.h"
 #include "uet_pkt_hdr.h"
 
 #define UET_MSEC_PER_SEC  1000
@@ -102,7 +103,15 @@ static inline uint64_t uet_gettime(uint64_t *time_ms)
 {
 	return (*time_ms = jiffies);
 }
-void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str);
+
+static inline void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str)
+{
+	uint32_t net_order;
+
+	net_order = htonl(ipv4_addr);
+	snprintf(ipv4_addr_str, 16, "%u.%u.%u.%u", UET_NIPQUAD(net_order));
+}
+
 char *uet_ses_rc_to_str(uet_ses_rc_t rc);
 void uet_print_mac_addr(uint8_t *mac);
 void uet_print_ipv4_addr(uint32_t ipv4_addr);
