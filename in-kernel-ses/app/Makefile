@@ -21,7 +21,7 @@ LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric
 	$(CC) $(CFLAGS) $(INCS) -c -o $@ $<
 
 uet: uet.o uet_api.o
-	$(CC) -static uet.o uet_api.o -o $@ $(LDFLAGS)
+	$(CC) $(STATIC) uet.o uet_api.o -o $@ $(LDFLAGS)
 
 
 all: uet

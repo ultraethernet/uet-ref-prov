@@ -2,6 +2,8 @@
 CC=gcc
 CLANG=clang
 
+KDIR ?= /lib/modules/`uname -r`/build
+
 LIBFABRIC=../libfabric
 
 INCS=-I. -I./util -I./nic_shim -I./crypto \
@@ -76,7 +78,11 @@ $(CC_SIM_BIN): $(CC_SIM_OBJ)
 	@echo 'Building program: $@'
 	@$(CC) $(CC_SIM_OBJ) -o $@ $(LDFLAGS)
 
-all: $(BIN)
+in-kernel-ses:
+	cd in-kernel-ses/app && make all STATIC=$(STATIC) && cd -
+	cd in-kernel-ses/driver && make all KDIR=$(KDIR) && cd -
+
+all: $(BIN) in-kernel-ses
 
 xdp: $(XDP_BIN) $(XDP_KERN_BIN)
 
@@ -86,6 +92,8 @@ clean:
 	@rm -rf $(OBJ_DIR) $(BIN) \
 		$(CC_SIM_OBJ_DIR) $(CC_SIM_BIN) \
 		$(XDP_OBJ_DIR) $(XDP_BIN) $(XDP_KERN_BIN)
+	cd in-kernel-ses/app && make clean STATIC=$(STATIC) && cd -
+	cd in-kernel-ses/driver && make clean KDIR=$(KDIR) && cd -
 
-.PHONY: all xdp cc_sim clean
+.PHONY: all xdp cc_sim clean in-kernel-ses
 
