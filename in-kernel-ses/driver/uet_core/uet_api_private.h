@@ -8,6 +8,7 @@
 #define _UET_API_PRIVATE_H_
 
 #include <linux/types.h>
+#include <linux/interrupt.h>
 
 #include "uet_list.h"
 #include "uet_uapi.h"
@@ -272,6 +273,8 @@ struct uet_instance {
 	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
 	uint32_t max_rtr_q_entries;         /* max num of rtr msg's to buffer */
 	struct uet_msg_id_cb msg_id_cb;        /* used for assigning msg id's */
+	spinlock_t biglock;
+	struct tasklet_struct task;
 				      /* used for assigning tx restart tokens */
 	struct uet_tx_rtr_token_cb tx_rtr_token_cb;
 	struct uet_rw_lock ipv4_ep_lkup_lock;  /* lock for ipv4 ep lookup tbl */

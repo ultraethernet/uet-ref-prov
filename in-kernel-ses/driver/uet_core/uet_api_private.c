@@ -3649,6 +3649,17 @@ ssize_t uet_send_req_api_common(
 	return 0;
 }
 
+static void uet_instance_task(struct tasklet_struct *task)
+{
+	struct uet_instance *uet = 
+		container_of(task, struct uet_instance, task);
+	unsigned long flags;
+
+	spin_lock_irqsave(&uet->biglock, flags);
+
+	spin_unlock_irqrestore(&uet->biglock, flags);
+}
+
 int uet_initialize_internal(uet_handle_t *handle)
 {
 	int rc;
@@ -3679,6 +3690,9 @@ int uet_initialize_internal(uet_handle_t *handle)
 	uet->pds.upcall.pds_err = uet_pds_to_ses_pds_err;
 
 	uet_rw_lock_init(&uet->ipv4_ep_lkup_lock);
+
+	spin_lock_init(&uet->biglock);
+	tasklet_setup(&uet->task, uet_instance_task);
 
 	rc = uet_pds_init(uet);
 	if (rc != 0)
