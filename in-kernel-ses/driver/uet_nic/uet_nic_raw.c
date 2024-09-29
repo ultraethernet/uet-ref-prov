@@ -322,17 +322,21 @@ error:
 	return rc;
 }
 
+static struct uet_nic_ops raw_ops = {
+	.nic_getinfo			= uet_nic_raw_getinfo,
+	.nic_get_ipv4_nh			= uet_nic_raw_get_ipv4_nh,
+	.nic_tx_pkt				= uet_nic_raw_tx_pkt,
+	.nic_rx_pkt				= uet_nic_raw_rx_pkt,
+	.nic_rx_poll			= uet_nic_raw_rx_poll,
+	.nic_mr_reg				= uet_nic_raw_mr_reg,
+	.nic_mr_dereg			= uet_nic_raw_mr_dereg,
+	.nic_finalize			= uet_nic_raw_finalize,
+	.nic_initialize			= uet_nic_raw_initialize,
+};
+
 static int uet_nic_raw_init(void)
 {
-	uet_nic_getinfo_fn			= uet_nic_raw_getinfo;
-	uet_nic_get_ipv4_nh_fn		= uet_nic_raw_get_ipv4_nh;
-	uet_nic_tx_pkt_fn			= uet_nic_raw_tx_pkt;
-	uet_nic_rx_pkt_fn			= uet_nic_raw_rx_pkt;
-	uet_nic_rx_poll_fn			= uet_nic_raw_rx_poll;
-	uet_nic_mr_reg_fn			= uet_nic_raw_mr_reg;
-	uet_nic_mr_dereg_fn			= uet_nic_raw_mr_dereg;
-	uet_nic_finalize_fn			= uet_nic_raw_finalize;
-	uet_nic_initialize_fn		= uet_nic_raw_initialize;
+	uet_nic_set_ops(&raw_ops);
 
 	spin_lock_init(&rx_queue_lock);
 	INIT_LIST_HEAD(&rx_queue);
@@ -349,15 +353,7 @@ static void uet_nic_raw_exit(void)
 
 	inet_del_protocol(&uet_protocol, UET_IPPROTO);
 
-	uet_nic_getinfo_fn			= NULL;
-	uet_nic_get_ipv4_nh_fn		= NULL;
-	uet_nic_tx_pkt_fn			= NULL;
-	uet_nic_rx_pkt_fn			= NULL;
-	uet_nic_rx_poll_fn			= NULL;
-	uet_nic_mr_reg_fn			= NULL;
-	uet_nic_mr_dereg_fn			= NULL;
-	uet_nic_finalize_fn			= NULL;
-	uet_nic_initialize_fn		= NULL;
+	uet_nic_set_ops(NULL);
 
 	spin_lock_irqsave(&rx_queue_lock, flag);
 	list_for_each(entry, &rx_queue) {
