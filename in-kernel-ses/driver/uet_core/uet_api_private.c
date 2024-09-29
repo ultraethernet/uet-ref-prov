@@ -3653,9 +3653,47 @@ static void uet_instance_task(struct tasklet_struct *task)
 {
 	struct uet_instance *uet = 
 		container_of(task, struct uet_instance, task);
+	uet_pkt_handle_t err_pkt_handle;
+	struct uet_ep *uet_ep;
+	struct uet_domain *domain;
+	struct uet_list_entry *dom_item, *ep_item;
 	unsigned long flags;
+	int rc, count = 10; // Max RX budget
 
 	spin_lock_irqsave(&uet->biglock, flags);
+
+	do {
+		rc = uet->pds.downcall.progress_rx(uet);
+	} while(rc == 0 && --count);
+
+	if (count == 0) {
+		tasklet_schedule(task);
+	}
+
+	rc = uet->pds.downcall.progress_tx(uet, &err_pkt_handle);
+	switch (rc) {
+		case 0:
+			break;
+		case -EAGAIN:
+			tasklet_schedule(task);
+			break;
+		default:
+			uet_tx_desc_set_err(
+				(struct uet_tx_desc *) err_pkt_handle,
+				ETIMEDOUT, UET_TX_DESC_STATE_ERR_COMPLETE);
+			break;
+	}
+
+	uet_list_foreach(&uet->domain_list_head, dom_item) {
+		domain = container_of(dom_item, 
+				struct uet_domain, domain_list_entry);
+		uet_list_foreach(&domain->ep_list_head, ep_item) {
+			uet_ep = container_of(ep_item, struct uet_ep,
+					ep_list_entry);
+			uet_msg_age(uet_ep);
+			uet_tx_msg_try(uet_ep);
+		}
+	}
 
 	spin_unlock_irqrestore(&uet->biglock, flags);
 }
