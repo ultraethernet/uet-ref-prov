@@ -4089,7 +4089,7 @@ ssize_t uet_cq_read_internal(uet_cq_handle_t cq_handle,
 
 	pds->downcall.progress_rx(uet_ep->uet_domain->uet);
 
-	rc = pds->downcall.progress_tx(uet_ep, &err_pkt_handle);
+	rc = pds->downcall.progress_tx(uet_ep->uet_domain->uet, &err_pkt_handle);
 	switch (rc) {
 	case 0:
 	case -EAGAIN:
