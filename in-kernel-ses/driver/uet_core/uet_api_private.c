@@ -3433,14 +3433,19 @@ ssize_t uet_recv_api_common(uet_recv_api_t recv_api,
 		uint64_t ignore, void *context)
 {
 	struct uet_ep *uet_ep;
+	struct uet_instance *uet;
 	struct uet_rx_desc *rx_desc;
 	struct uet_av_entry *av_entry;
+	unsigned long flags;
 
 	uet_ep = (struct uet_ep *) ep_handle;
+	uet = uet_ep->uet_domain->uet;
 
+	spin_lock_irqsave(&uet->biglock, flags);
 	/* check that rx completion queue is bound to endpoint */
 	if (uet_ep->recv_cq.cq_state == UET_CQ_DOWN) {
 		UET_API_ERR("No RX Completion Q");
+		spin_unlock_irqrestore(&uet->biglock, flags);
 		return -EIO;
 	}
 
@@ -3449,14 +3454,17 @@ ssize_t uet_recv_api_common(uet_recv_api_t recv_api,
 		if (ignore != UET_EXACT_MATCH) {
 			UET_API_ERR(
 				"Wildcard Tags Not Supported for uet_trecv()");
+			spin_unlock_irqrestore(&uet->biglock, flags);
 			return -EINVAL;
 		}
 	}
 
 	/* allocate rx descriptor */
 	rx_desc = uet_rx_desc_list_pop(uet_ep);
-	if (rx_desc == NULL)
+	if (rx_desc == NULL) {
+		spin_unlock_irqrestore(&uet->biglock, flags);
 		return -EAGAIN;
+	}
 
 	/* init msg descriptor */
 	memset(rx_desc, 0, sizeof(struct uet_rx_desc));
@@ -3509,7 +3517,11 @@ ssize_t uet_recv_api_common(uet_recv_api_t recv_api,
 		break;
 	}
 
-	uet_tx_rtr_try(uet_ep, rx_desc, recv_api);
+	if (0) uet_tx_rtr_try(uet_ep, rx_desc, recv_api);
+
+	tasklet_schedule(&uet->task);
+
+	spin_unlock_irqrestore(&uet->biglock, flags);
 
 	return 0;
 }
@@ -3531,14 +3543,17 @@ ssize_t uet_send_req_api_common(
 	struct uet_tx_desc *tx_desc;
 	struct uet_rx_desc *rx_desc;
 	struct uet_av_entry *av_entry;
+	unsigned long flags;
 
 	uet_ep = (struct uet_ep *) ep_handle;
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *) dst_addr_handle;
 
+	spin_lock_irqsave(&uet->biglock, flags);
 	/* check that tx completion queue is bound to endpoint */
 	if (uet_ep->send_cq.cq_state == UET_CQ_DOWN) {
 		UET_API_ERR("No TX Completion Q");
+		spin_unlock_irqrestore(&uet->biglock, flags);
 		return -EIO;
 	}
 
@@ -3546,20 +3561,25 @@ ssize_t uet_send_req_api_common(
 	if (!(av_entry->flags & UET_NH_MAC_ADDR_V)) {
 		rc = uet_nic_get_ipv4_nh(UET_NIC(uet), av_entry->addr->fa.v4,
 					 av_entry->nh_mac_addr);
-		if (rc != 0)
+		if (rc != 0) {
+			spin_unlock_irqrestore(&uet->biglock, flags);
 			return rc;
+		}
 		av_entry->flags |= UET_NH_MAC_ADDR_V;
 	}
 
 	/* allocate msg id */
 	rc = uet_alloc_msg_id(uet, &msg_id);
-	if (rc != 0)
+	if (rc != 0) {
+		spin_unlock_irqrestore(&uet->biglock, flags);
 		return rc;
+	}
 
 	/* allocate tx descriptor */
 	tx_desc = uet_tx_desc_list_pop(uet_ep);
 	if (tx_desc == NULL) {
 		uet_dealloc_msg_id(uet, msg_id);
+		spin_unlock_irqrestore(&uet->biglock, flags);
 		return -EAGAIN;
 	}
 
@@ -3569,6 +3589,7 @@ ssize_t uet_send_req_api_common(
 		if (rx_desc == NULL) {
 			uet_dealloc_msg_id(uet, msg_id);
 			uet_tx_desc_list_insert(tx_desc);
+			spin_unlock_irqrestore(&uet->biglock, flags);
 			return -EAGAIN;
 		}
 		/* init rx descriptor */
@@ -3641,10 +3662,12 @@ ssize_t uet_send_req_api_common(
 
 	/* do the send */
 	if (uet_ring_entry_cnt(&uet_ep->tx_ring) == 1)
-		uet_tx_msg(tx_desc);
+		tasklet_schedule(&uet->task); //uet_tx_msg(tx_desc);
 
 	uet_ep->num_active_sends++;
 	av_entry->num_active_ops++;
+
+	spin_unlock_irqrestore(&uet->biglock, flags);
 
 	return 0;
 }
@@ -3757,6 +3780,7 @@ int uet_finalize_internal(uet_handle_t handle)
 	struct uet_instance *uet;
 
 	uet = (struct uet_instance *) handle;
+	tasklet_kill(&uet->task);
 	uet_finalize_core(uet);
 	kfree(uet);
 
@@ -4116,13 +4140,17 @@ ssize_t uet_cq_read_internal(uet_cq_handle_t cq_handle,
 	struct uet_ep *uet_ep;
 	struct uet_pds *pds;
 	struct uet_ring *ring;
+	struct uet_instance *uet;
 	ssize_t cq_count, rd_count, max_rd_count;
 	char *buffer = buf;
+	unsigned long flags;
 
 	cq = (struct uet_cq *) cq_handle;
 	uet_ep = cq->uet_ep;
 	pds = &uet_ep->uet_domain->uet->pds;
+	uet = uet_ep->uet_domain->uet;
 
+#if 0
 	uet_msg_age(uet_ep);
 
 	pds->downcall.progress_rx(uet_ep->uet_domain->uet);
@@ -4139,11 +4167,15 @@ ssize_t uet_cq_read_internal(uet_cq_handle_t cq_handle,
 	}
 
 	uet_tx_msg_try(uet_ep);
+#endif
+	spin_lock_irqsave(&uet->biglock, flags);
 
 	ring = &cq->ring;
 	cq_count = uet_ring_entry_cnt(ring);
-	if (cq_count == 0)
+	if (cq_count == 0) {
+		spin_unlock_irqrestore(&uet->biglock, flags);
 		return 0;
+	}
 
 	max_rd_count = uet_min(cq_count, count);
 	for (rd_count = 0; rd_count < max_rd_count; rd_count++) {
@@ -4161,6 +4193,8 @@ ssize_t uet_cq_read_internal(uet_cq_handle_t cq_handle,
 	}
 
 	pr_info("uet: cq read entry count: %lu\n", rd_count);
+
+	spin_unlock_irqrestore(&uet->biglock, flags);
 
 	return rd_count;
 }

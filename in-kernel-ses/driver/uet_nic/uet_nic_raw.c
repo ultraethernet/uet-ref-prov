@@ -9,6 +9,7 @@
 #include <net/neighbour.h>
 #include <net/arp.h>
 
+#include "uet_api_private.h"
 #include "uet_nic.h"
 #include "uet_util.h"
 #include "uet_pkt_hdr.h"
@@ -27,6 +28,7 @@ struct uet_rx_queue {
 
 struct uet_nic_data {
 	struct uet_rx_queue queue;
+	struct uet_nic *nic;
 };
 
 static spinlock_t rx_queue_lock;
@@ -41,6 +43,8 @@ static int uet_pkt_receiver(struct sk_buff *skb)
 	unsigned long flags;
 	struct list_head *entry;
 	struct uet_rx_queue *queue = NULL;
+	struct uet_nic_data *p_data = NULL;
+	struct uet_instance *uet = NULL;
 
 	pr_info("uet: received uet packet.\n");
 
@@ -56,6 +60,11 @@ static int uet_pkt_receiver(struct sk_buff *skb)
 
 	if (queue) {
 		skb_queue_tail(&queue->pkts, skb);
+		p_data = container_of(queue, struct uet_nic_data, queue);
+		if (p_data->nic) {
+			uet = container_of(p_data->nic, struct uet_instance, nic);
+			tasklet_schedule(&uet->task);
+		}
 	} else {
 		pr_info("uet_nic: No UET NIC found.\n");
 		kfree_skb(skb);
@@ -284,6 +293,7 @@ static int uet_nic_raw_initialize(struct uet_nic *nic)
 	spin_unlock_irqrestore(&rx_queue_lock, flag);
 
 	nic->nic_priv_data = p_data;
+	p_data->nic = nic;
 
 	rcu_read_lock();
 
