@@ -37,6 +37,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/ioctl.h>
+#include <sys/epoll.h>
 
 #include "uet_api.h"
 
@@ -552,6 +553,24 @@ static int uet_cq_read_internal(uet_cq_handle_t cq_handle,
 {
 	int rc;
 	struct uet_ioctl_cq_read_args args;
+	struct epoll_event ev, events[20];
+	int epoll_fd = epoll_create(64);
+
+	ev.data.fd = g_uet_dev_fd;
+	ev.events  = (EPOLLIN | EPOLLOUT);
+	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, g_uet_dev_fd, &ev);
+
+	while(1) {
+		int ret = epoll_wait( epoll_fd, events, 20, 5000);
+		if (ret < 0) {
+			perror("epoll_wait");
+			close(epoll_fd);
+			break;
+		} else if (ret > 0) {
+			close(epoll_fd);
+			break;
+		}
+	}
 
 	args.in.cq_handle = cq_handle;
 	args.in.max_count = count;
