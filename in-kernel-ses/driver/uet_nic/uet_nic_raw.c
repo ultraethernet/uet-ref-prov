@@ -59,18 +59,21 @@ static int uet_pkt_receiver(struct sk_buff *skb)
 	}
 
 	if (queue) {
-		skb_queue_tail(&queue->pkts, skb);
 		p_data = container_of(queue, struct uet_nic_data, queue);
-		if (p_data->nic) {
-			uet = container_of(p_data->nic, struct uet_instance, nic);
-			tasklet_schedule(&uet->task);
-		}
 	} else {
 		pr_info("uet_nic: No UET NIC found.\n");
 		kfree_skb(skb);
 	}
 
 	spin_unlock_irqrestore(&rx_queue_lock, flags);
+
+	if (p_data && p_data->nic) {
+		uet = container_of(p_data->nic, struct uet_instance, nic);
+		spin_lock_irqsave(&uet->biglock, flags);
+		skb_queue_tail(&queue->pkts, skb);
+		tasklet_schedule(&uet->task);
+		spin_unlock_irqrestore(&uet->biglock, flags);
+	}
 
 	return 0;
 }

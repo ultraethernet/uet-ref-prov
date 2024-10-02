@@ -954,6 +954,7 @@ static void uet_tx_cq_read_entry(void *buf, struct uet_ring *ring)
 
 	ring_entry = &(((struct uet_cq_ring_entry *) (ring->base))[ring->tail]);
 
+	// FIXME: Copy from kernel buf to __user buf
 	memcpy(buf, &ring_entry->entry, sizeof(struct uet_cq_entry));
 
 	uet_tx_desc_list_insert(ring_entry->desc.tx);
@@ -1193,6 +1194,7 @@ static void uet_rx_cq_read_entry(void *buf, struct uet_ring *ring)
 
 	ring_entry = &(((struct uet_cq_ring_entry *) (ring->base))[ring->tail]);
 
+	// FIXME: Copy from kernel buf to __user buf
 	memcpy(buf, &ring_entry->entry, sizeof(struct uet_cq_entry));
 
 	uet_rx_desc_list_insert(ring_entry->desc.rx);
@@ -1966,6 +1968,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	struct uet_rx_desc *rx_desc;
 	struct uet_rx_msg_key msg_key;
 	struct uet_tag_initiator_key tag_key, tag_only_key;
+	struct uet_instance *uet = uet_ep->uet_domain->uet;
 
 	ses = (struct uet_ses_req_std *) pp->ses;
 
@@ -2014,8 +2017,6 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		if (((pp->ses_payload_len != req_len) &&
 		     (pp->ses_payload_len != max_payload_len)) ||
 		    (pp->ses_payload_len > pp->pkt_payload_len)) {
-			pr_info("[tmp][%s:%d] pp->ses_payload_len: %u pp->pkt_payload_len: %u max_payload_len: %u req_len: %u\n",
-				__func__, __LINE__, pp->ses_payload_len, pp->pkt_payload_len, max_payload_len, req_len);
 			invalid_payload_len = true;
 		}
 	} else {
@@ -2215,6 +2216,8 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		/* post rx completion queue entry */
 		pr_info("uet: posting in recv cq.\n");
 		uet_rx_cq_post_entry(rx_desc);
+		atomic_inc(&uet->recv_complete);
+		wake_up(&uet->task_wait_queue);
 	}
 
 	return UET_RC_OK;
@@ -3223,6 +3226,7 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 	struct uet_ring *ring;
 	struct uet_tx_desc *tx_desc, *start_tx_desc;
 	struct uet_av_entry *av_entry;
+	struct uet_instance *uet = uet_ep->uet_domain->uet;
 
 	ring = &uet_ep->tx_ring;
 	uet_gettime(&now);
@@ -3280,6 +3284,8 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 		case UET_TX_DESC_STATE_COMPLETE:
 			pr_info("uet: posting in send cq.\n");
 			uet_tx_cq_post_entry(tx_desc);
+			atomic_inc(&uet->send_complete);
+			wake_up(&uet->task_wait_queue);
 			break;
 		default:
 rotate_and_continue:
@@ -3682,12 +3688,14 @@ static void uet_instance_task(struct tasklet_struct *task)
 	struct uet_list_entry *dom_item, *ep_item;
 	unsigned long flags;
 	int rc, count = 10; // Max RX budget
+	
+	pr_info("(IN) %s\n", __func__);
 
 	spin_lock_irqsave(&uet->biglock, flags);
 
 	do {
 		rc = uet->pds.downcall.progress_rx(uet);
-	} while(rc == 0 && --count);
+	} while(rc == 1 && --count);
 
 	if (count == 0) {
 		tasklet_schedule(task);
@@ -3719,6 +3727,8 @@ static void uet_instance_task(struct tasklet_struct *task)
 	}
 
 	spin_unlock_irqrestore(&uet->biglock, flags);
+
+	pr_info("(OUT) %s\n", __func__);
 }
 
 int uet_initialize_internal(uet_handle_t *handle)
@@ -3752,6 +3762,10 @@ int uet_initialize_internal(uet_handle_t *handle)
 
 	uet_rw_lock_init(&uet->ipv4_ep_lkup_lock);
 
+	atomic_set(&uet->recv_complete, 0);
+	atomic_set(&uet->send_complete, 0);
+
+	init_waitqueue_head(&uet->task_wait_queue);
 	spin_lock_init(&uet->biglock);
 	tasklet_setup(&uet->task, uet_instance_task);
 
@@ -4184,12 +4198,17 @@ ssize_t uet_cq_read_internal(uet_cq_handle_t cq_handle,
 				rd_count = -EINVAL;
 			break;
 		}
-		if (cq == &uet_ep->send_cq)
-			uet_tx_cq_read_entry(&buffer[rd_count * sizeof(struct uet_cq_entry)],
-					     ring);
-		else
-			uet_rx_cq_read_entry(&buffer[rd_count * sizeof(struct uet_cq_entry)],
-					     ring);
+		if (cq == &uet_ep->send_cq) {
+			atomic_dec(&uet->send_complete);
+			uet_tx_cq_read_entry(
+			  &buffer[rd_count * sizeof(struct uet_cq_entry)], 
+			  ring);
+		} else {
+			atomic_dec(&uet->recv_complete);
+			uet_rx_cq_read_entry(
+			  &buffer[rd_count * sizeof(struct uet_cq_entry)], 
+			  ring);
+		}
 	}
 
 	pr_info("uet: cq read entry count: %lu\n", rd_count);
@@ -4477,6 +4496,33 @@ int uet_mr_close_internal(uet_mr_handle_t mr_handle)
 	uet_dealloc_mr_desc(mr_desc->uet_dom, mr_desc);
 
 	return 0;
+}
+
+unsigned int uet_poll_internal(uet_handle_t uet_handle, 
+		struct file *filp, struct poll_table_struct *wait)
+{
+	__poll_t mask = 0;
+	struct uet_instance *uet = (struct uet_instance *) uet_handle;
+	unsigned long flags;
+
+	if ((atomic_read(&uet->send_complete) == 0) 
+		&& (atomic_read(&uet->recv_complete) == 0)) {
+		poll_wait(filp, &uet->task_wait_queue, wait);
+	}
+
+	spin_lock_irqsave(&uet->biglock, flags);
+
+	if (atomic_read(&uet->recv_complete) > 0) {
+		mask |= ( POLLIN | POLLRDNORM );
+	}
+
+	if (atomic_read(&uet->send_complete) > 0) {
+		mask |= ( POLLOUT | POLLWRNORM );
+	}
+
+	spin_unlock_irqrestore(&uet->biglock, flags);
+
+	return mask;
 }
 
 

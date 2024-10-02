@@ -2970,7 +2970,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 
 	}
 
-	return 0;
+	return 1;
 
 exit_err:
 	kfree(pkt);

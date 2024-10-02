@@ -738,6 +738,7 @@ static long uet_ioctl(struct file *filp, unsigned int cmd,
 		case UET_IOCTL_REQ_SEND:
 			{
 				struct uet_ioctl_send_req_args args;
+				void *buf;
 
 				if (copy_from_user(&args, (void *)arg,
 					sizeof(struct uet_ioctl_send_req_args))) {
@@ -745,11 +746,17 @@ static long uet_ioctl(struct file *filp, unsigned int cmd,
 					goto exit;
 				}
 
+				buf = kmalloc(args.in.len, GFP_KERNEL);
+				if (buf == NULL) {
+					rc = -ENOMEM;
+					goto exit;
+				}
+
 				down(&dev->sem);
 
 				rc = uet_send_req_api_common(args.in.send_req_api,
 						args.in.ep_handle, args.in.job_id, 
-						args.in.buf, args.in.len, 
+						buf, args.in.len, 
 						args.in.mr_handle, args.in.dst_addr_handle,
 						args.in.tag, args.in.imm_data, 
 						args.in.remote_mem_addr, 
@@ -774,6 +781,7 @@ static long uet_ioctl(struct file *filp, unsigned int cmd,
 		case UET_IOCTL_REQ_RECV:
 			{
 				struct uet_ioctl_recv_api_args args;
+				void *buf;
 
 				if (copy_from_user(&args, (void *)arg,
 					sizeof(struct uet_ioctl_recv_api_args))) {
@@ -781,11 +789,17 @@ static long uet_ioctl(struct file *filp, unsigned int cmd,
 					goto exit;
 				}
 
+				buf = kmalloc(args.in.len, GFP_KERNEL);
+				if (buf == NULL) {
+					rc = -ENOMEM;
+					goto exit;
+				}
+
 				down(&dev->sem);
 
 				rc = uet_recv_api_common(args.in.recv_api,
 						args.in.ep_handle, args.in.job_id,
-						args.in.buf, args.in.len, 
+						buf, args.in.len, 
 						args.in.mr_handle, args.in.src_addr_handle,
 						args.in.tag, args.in.ignore,
 						(void *)args.in.context);
@@ -819,12 +833,29 @@ exit:
 	return rc;
 }
 
+static unsigned int uet_poll(struct file *filp, struct poll_table_struct *wait)
+{
+	struct uet_dev *dev = (struct uet_dev *) filp->private_data;
+	__poll_t mask = 0;
+
+	pr_info("uet: (IN) %s\n", __func__);
+	down(&dev->sem);
+
+	mask = uet_poll_internal(dev->uet, filp, wait);
+
+	up(&dev->sem);
+	pr_info("uet: (OUT) %s\n", __func__);
+
+	return mask;
+}
+
 struct file_operations uet_fops = {
 	.owner = THIS_MODULE,
 	.read = NULL,
 	.write = NULL,
 	.open = uet_open,
 	.unlocked_ioctl = uet_ioctl,
+	.poll = uet_poll,
 	.release = uet_release
 };
 
