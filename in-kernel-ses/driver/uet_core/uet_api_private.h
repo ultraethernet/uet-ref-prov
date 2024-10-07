@@ -8,6 +8,9 @@
 #define _UET_API_PRIVATE_H_
 
 #include <linux/types.h>
+#include <linux/interrupt.h>
+#include <linux/wait.h>
+#include <linux/poll.h>
 
 #include "uet_list.h"
 #include "uet_uapi.h"
@@ -272,6 +275,11 @@ struct uet_instance {
 	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
 	uint32_t max_rtr_q_entries;         /* max num of rtr msg's to buffer */
 	struct uet_msg_id_cb msg_id_cb;        /* used for assigning msg id's */
+	spinlock_t biglock;                        /* FIXME Per-instance lock */
+	struct tasklet_struct task;                   /* Per-instance tasklet */
+	struct wait_queue_head task_wait_queue;    /* Task waitqueue for poll */
+	atomic_t send_complete;
+	atomic_t recv_complete;
 				      /* used for assigning tx restart tokens */
 	struct uet_tx_rtr_token_cb tx_rtr_token_cb;
 	struct uet_rw_lock ipv4_ep_lkup_lock;  /* lock for ipv4 ep lookup tbl */
@@ -479,5 +487,8 @@ extern ssize_t uet_recv_api_common(uet_recv_api_t recv_api,
 		void __user *buf, size_t len, uet_mr_handle_t mr_handle, 
 		uet_addr_handle_t src_addr_handle, uint64_t tag, 
 		uint64_t ignore, void *context);
+
+extern unsigned int uet_poll_internal(uet_handle_t uet, 
+		struct file *filp, struct poll_table_struct *wait);
 
 #endif /* _UET_API_PRIVATE_H_ */

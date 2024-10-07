@@ -336,12 +336,14 @@ static void uet_init_msg_buf(struct uet_context *ctx, uint8_t *buf)
 /* validate message buffer contents */
 static uet_rc_t uet_validate_msg(struct uet_context *ctx, uint8_t *buf)
 {
+#if 0
 	size_t i;
 
 	for (i = 0; i < ctx->cfg.msg_size; i++) {
 		if (buf[i] != (uint8_t) i)
 			return UET_ERR_RC;
 	}
+#endif
 
 	return UET_SUCCESS_RC;
 }

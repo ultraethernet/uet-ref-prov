@@ -16,11 +16,38 @@
 #define UET_MAX_SYS_CMD_OCTETS  256
 
 #define UET_NIC(uet) (&(uet)->nic)
+#define UET_INSTANCE_FROM_NIC(nic) container_of(nic, struct uet_instance, nic)
 
 typedef void *uet_nic_mr_handle_t;      /* nic handle for memory region */
 
 struct uet_mr_buf_desc;
 struct uet_instance;
+struct uet_nic;
+
+struct uet_nic_ops {
+	/* function pointers supporting different NIC interfaces */
+	int (*nic_getinfo)(struct uet_nic *nic,
+			   struct uet_nic_info *nic_info);
+	int (*nic_get_ipv4_nh)(struct uet_nic *nic,
+			       uint32_t dst_ip,
+			       uint8_t *mac);
+	int (*nic_tx_pkt)(struct uet_nic *nic,
+			  void *pkt,
+			  void *iphdr,
+			  size_t pkt_size);
+	int (*nic_rx_pkt)(struct uet_nic *nic,
+			  void *pkt,
+			  size_t pkt_buf_size,
+			  size_t *rx_pkt_size);
+	int (*nic_mr_reg)(struct uet_nic *nic,
+			  struct uet_mr_buf_desc *desc,
+			  uet_nic_mr_handle_t *handle);
+	int (*nic_mr_dereg)(struct uet_nic *nic,
+			    uet_nic_mr_handle_t handle);
+	int (*nic_rx_poll)(struct uet_nic *nic);
+	void (*nic_finalize)(struct uet_nic *nic);
+	int (*nic_initialize)(struct uet_nic *nic);
+};
 
 /* nic control block structure - field of struct uet_instance */
 struct uet_nic {
@@ -44,29 +71,7 @@ struct uet_nic {
 	uint8_t uet_ipproto;           /* ip protocol number for uet */
 
 	void *nic_priv_data;
-
-	/* function pointers supporting different NIC interfaces */
-	int (*nic_getinfo)(struct uet_nic *nic,
-			   struct uet_nic_info *nic_info);
-	int (*nic_get_ipv4_nh)(struct uet_nic *nic,
-			       uint32_t dst_ip,
-			       uint8_t *mac);
-	int (*nic_tx_pkt)(struct uet_nic *nic,
-			  void *pkt,
-			  void *iphdr,
-			  size_t pkt_size);
-	int (*nic_rx_pkt)(struct uet_nic *nic,
-			  void *pkt,
-			  size_t pkt_buf_size,
-			  size_t *rx_pkt_size);
-	int (*nic_mr_reg)(struct uet_nic *nic,
-			  struct uet_mr_buf_desc *desc,
-			  uet_nic_mr_handle_t *handle);
-	int (*nic_mr_dereg)(struct uet_nic *nic,
-			    uet_nic_mr_handle_t handle);
-	int (*nic_rx_poll)(struct uet_nic *nic);
-	void (*nic_finalize)(struct uet_nic *nic);
-	int (*nic_initialize)(struct uet_nic *nic);
+	struct uet_nic_ops ops;
 };
 
 /*********************************************************************
@@ -93,10 +98,10 @@ int uet_nic_initialize(struct uet_nic *nic);
  */
 static inline void uet_nic_finalize(struct uet_nic *nic)
 {
-	if (!nic)
+	if (!nic || !nic->ops.nic_finalize)
 		BUG();
 
-	return nic->nic_finalize(nic);
+	return nic->ops.nic_finalize(nic);
 }
 
 /*
@@ -113,10 +118,10 @@ static inline void uet_nic_finalize(struct uet_nic *nic)
 static inline int uet_nic_getinfo(struct uet_nic *nic,
 				  struct uet_nic_info *nic_info)
 {
-	if (!nic || !nic_info)
+	if (!nic || !nic_info || !nic->ops.nic_getinfo)
 		BUG();
 
-	return nic->nic_getinfo(nic, nic_info);
+	return nic->ops.nic_getinfo(nic, nic_info);
 }
 
 /*
@@ -135,10 +140,10 @@ static inline int uet_nic_get_ipv4_nh(struct uet_nic *nic,
 				      uint32_t dst_ip,
 				      uint8_t *mac)
 {
-	if (!nic || !mac)
+	if (!nic || !mac || !nic->ops.nic_get_ipv4_nh)
 		BUG();
 
-	return nic->nic_get_ipv4_nh(nic, dst_ip, mac);
+	return nic->ops.nic_get_ipv4_nh(nic, dst_ip, mac);
 }
 
 /*
@@ -159,10 +164,10 @@ static inline int uet_nic_tx_pkt(struct uet_nic *nic,
 				 void *iphdr,
 				 size_t pkt_size)
 {
-	if (!nic || !pkt || !pkt_size)
+	if (!nic || !pkt || !pkt_size || !nic->ops.nic_tx_pkt)
 		BUG();
 
-	return nic->nic_tx_pkt(nic, pkt, iphdr, pkt_size);
+	return nic->ops.nic_tx_pkt(nic, pkt, iphdr, pkt_size);
 }
 
 /*
@@ -185,10 +190,11 @@ static inline int uet_nic_rx_pkt(struct uet_nic *nic,
 				 size_t pkt_buf_size,
 				 size_t *rx_pkt_size)
 {
-	if (!nic || !pkt || !pkt_buf_size || !rx_pkt_size)
+	if (!nic || !pkt || !pkt_buf_size || 
+	    !rx_pkt_size || !nic->ops.nic_rx_pkt)
 		BUG();
 
-	return nic->nic_rx_pkt(nic, pkt, pkt_buf_size, rx_pkt_size);
+	return nic->ops.nic_rx_pkt(nic, pkt, pkt_buf_size, rx_pkt_size);
 }
 
 /*
@@ -204,10 +210,10 @@ static inline int uet_nic_rx_pkt(struct uet_nic *nic,
  */
 static inline int uet_nic_rx_poll(struct uet_nic *nic)
 {
-	if (!nic)
+	if (!nic || !nic->ops.nic_rx_poll)
 		BUG();
 
-	return nic->nic_rx_poll(nic);
+	return nic->ops.nic_rx_poll(nic);
 }
 
 /*
@@ -227,10 +233,10 @@ static inline int uet_nic_mr_reg(struct uet_nic *nic,
 				 struct uet_mr_buf_desc *desc,
 				 uet_nic_mr_handle_t *handle)
 {
-	if (!nic || !desc || !handle)
+	if (!nic || !desc || !handle || !nic->ops.nic_mr_reg)
 		BUG();
 
-	return nic->nic_mr_reg(nic, desc, handle);
+	return nic->ops.nic_mr_reg(nic, desc, handle);
 }
 
 /*
@@ -247,33 +253,13 @@ static inline int uet_nic_mr_reg(struct uet_nic *nic,
 static inline int uet_nic_mr_dereg(struct uet_nic *nic,
 				   uet_nic_mr_handle_t handle)
 {
-	if (!nic || !handle)
+	if (!nic || !handle || !nic->ops.nic_mr_dereg)
 		BUG();
 
-	return nic->nic_mr_dereg(nic, handle);
+	return nic->ops.nic_mr_dereg(nic, handle);
 }
 
-extern int (*uet_nic_getinfo_fn)(struct uet_nic *nic,
-			       struct uet_nic_info *nic_info);
-extern int (*uet_nic_get_ipv4_nh_fn)(struct uet_nic *nic,
-				   uint32_t dst_ip,
-				   uint8_t *mac);
-extern int (*uet_nic_tx_pkt_fn)(struct uet_nic *nic,
-			      void *pkt,
-			      void *iphdr,
-			      size_t pkt_size);
-extern int (*uet_nic_rx_pkt_fn)(struct uet_nic *nic,
-			      void *pkt,
-			      size_t pkt_buf_size,
-			      size_t *rx_pkt_size);
-extern int (*uet_nic_rx_poll_fn)(struct uet_nic *nic);
-extern int (*uet_nic_mr_reg_fn)(struct uet_nic *nic,
-			      struct uet_mr_buf_desc *desc,
-			      uet_nic_mr_handle_t *handle);
-extern int (*uet_nic_mr_dereg_fn)(struct uet_nic *nic,
-				uet_nic_mr_handle_t handle);
-extern void (*uet_nic_finalize_fn)(struct uet_nic *nic);
-extern int (*uet_nic_initialize_fn)(struct uet_nic *nic);
+extern void uet_nic_set_ops(struct uet_nic_ops *ops);
 
 #define UET_NIPQUAD(addr) \
 	((unsigned char *)&addr)[0], \

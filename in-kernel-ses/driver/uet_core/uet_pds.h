@@ -178,7 +178,7 @@ struct uet_ses_to_pds_funcs {
 	 *      FI_SUCCESS on success
 	 *      negative value corresponding to fabric errno on error
 	 */
-	int (*progress_tx)(struct uet_ep *uet_ep,
+	int (*progress_tx)(struct uet_instance *uet,
 			   uet_pkt_handle_t *err_pkt_handle);
 
 	/*
@@ -306,7 +306,7 @@ extern int (*uet_pds_tx_pkt_fn)(uet_pkt_handle_t tx_pkt_handle,
 			  uint16_t msg_id, uet_next_hdr_t next_hdr,
 			  void *ses, size_t ses_len, void *pkt,
 			  size_t pkt_len, bool dma_rdy);
-extern int (*uet_pds_progress_tx_fn)(struct uet_ep *uet_ep,
+extern int (*uet_pds_progress_tx_fn)(struct uet_instance *uet,
 			       uet_pkt_handle_t *err_pkt_handle);
 extern int (*uet_pds_msg_cmpl_ind_fn)(struct uet_ep *uet_ep,
 				uet_addr_handle_t dst_addr_handle,

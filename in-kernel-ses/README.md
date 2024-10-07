@@ -13,7 +13,7 @@ Block diagram -
                  |                uet_api_internal.c)                  |
                  -------------------------------------------------------
                                                                            User space
- -------------------------------------------------------------------------------------
+     -------------------------------------------------------------------------------------
                                                                          Kernel space
                  -------------------------------------------------------
                  |                  uet_core.ko (SES)                  |
@@ -42,7 +42,7 @@ later is needed. The directory name needs to be 'libfabric'. The steps
 below build libfabric v1.20.1 and use a symlink for the common name.
 
 ```
-% cd ../..
+% cd ..
 % wget https://github.com/ofiwg/libfabric/releases/download/v1.20.1/libfabric-1.20.1.tar.bz2
 % tar -jxvf libfabric-1.20.1.tar.bz2
 % ln -s libfabric-1.20.1 libfabric
@@ -55,9 +55,6 @@ below build libfabric v1.20.1 and use a symlink for the common name.
 ## Build
 
 ```
-% cd app
-% make all
-% cd ../driver
 % make all
 ```
 
@@ -82,6 +79,49 @@ below build libfabric v1.20.1 and use a symlink for the common name.
 % sudo mknod /dev/uet c 248 0
 % ping -c1 192.168.1.1
 % sudo UET_CHAR_DEV=/dev/uet LD_LIBRARY_PATH=../../libfabric/src/.libs ./uet client 192.168.1.1
+```
+
+## Run with vmtest
+
+### Compile uet-linux-kernel
+
+```
+% git clone git@github.com:rabhunia-keysight/uet-linux-kernel-memmapped-q.git
+% cd uet-linux-kernel-memmapped-q
+% git checkout memmapped-queues
+% git submodule update --init
+% make O=.build uet_defconfig
+% cd .build
+% make -j$(nproc) bzImage modules && make -j$(nproc) modules_install INSTALL_MOD_PATH=$(pwd)/.modstage
+% sudo brctl addbr brtest0
+% sudo ifconfig brtest0 up
+```
+
+### Compile uet-ref-prov
+
+```
+% KDIR=../uet-linux-kernel-memmapped-q/.build make all
+% cp -vf in-kernel-ses/app/uet ../uet-linux-kernel-memmapped-q/.build/
+% cp -vf in-kernel-ses/driver/*.ko ../uet-linux-kernel-memmapped-q/.build/
+```
+
+### Start capture
+
+```
+% sudo tcpdump -i brtest0 -w /tmp/uet.pcap
+```
+
+### Start server
+
+```
+cd uet-linux-kernel-memmapped-q/.build
+sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.sh" QEMU_BRIDGE=brtest0 QEMU_INSTANCE=3 make tools/vmtest
+```
+
+### Start client
+
+```
+sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.sh" QEMU_BRIDGE=brtest0 QEMU_INSTANCE=2 make tools/vmtest
 ```
 
 ## Status and Pending Issues

@@ -2030,17 +2030,14 @@ static int uet_pds_check_rtx_pkt(struct uet_instance *uet,
 	return -EAGAIN; /* pkt retransmitted, could be more */
 }
 
-int uet_pds_progress_tx(struct uet_ep *uet_ep,
+int uet_pds_progress_tx(struct uet_instance *uet,
 			uet_pkt_handle_t *err_pkt_handle)
 {
-	struct uet_instance *uet;
 	struct uet_pdc *pdc;
 	struct uet_list_entry *tmp1, *tmp2;
 	struct uet_pdc_pkt *pdc_pkt;
 	uint64_t now, delta;
 	int rc;
-
-	uet = uet_ep->uet_domain->uet;
 
 	/* TODO:
 	 * [x] walk the allocated PDC list
@@ -2973,7 +2970,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 
 	}
 
-	return 0;
+	return 1;
 
 exit_err:
 	kfree(pkt);

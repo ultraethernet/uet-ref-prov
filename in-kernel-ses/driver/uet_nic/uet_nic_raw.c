@@ -9,6 +9,7 @@
 #include <net/neighbour.h>
 #include <net/arp.h>
 
+#include "uet_api_private.h"
 #include "uet_nic.h"
 #include "uet_util.h"
 #include "uet_pkt_hdr.h"
@@ -27,6 +28,7 @@ struct uet_rx_queue {
 
 struct uet_nic_data {
 	struct uet_rx_queue queue;
+	struct uet_nic *nic;
 };
 
 static spinlock_t rx_queue_lock;
@@ -41,6 +43,8 @@ static int uet_pkt_receiver(struct sk_buff *skb)
 	unsigned long flags;
 	struct list_head *entry;
 	struct uet_rx_queue *queue = NULL;
+	struct uet_nic_data *p_data = NULL;
+	struct uet_instance *uet = NULL;
 
 	pr_info("uet: received uet packet.\n");
 
@@ -55,13 +59,21 @@ static int uet_pkt_receiver(struct sk_buff *skb)
 	}
 
 	if (queue) {
-		skb_queue_tail(&queue->pkts, skb);
+		p_data = container_of(queue, struct uet_nic_data, queue);
 	} else {
 		pr_info("uet_nic: No UET NIC found.\n");
 		kfree_skb(skb);
 	}
 
 	spin_unlock_irqrestore(&rx_queue_lock, flags);
+
+	if (p_data && p_data->nic) {
+		uet = container_of(p_data->nic, struct uet_instance, nic);
+		spin_lock_irqsave(&uet->biglock, flags);
+		skb_queue_tail(&queue->pkts, skb);
+		tasklet_schedule(&uet->task);
+		spin_unlock_irqrestore(&uet->biglock, flags);
+	}
 
 	return 0;
 }
@@ -284,6 +296,7 @@ static int uet_nic_raw_initialize(struct uet_nic *nic)
 	spin_unlock_irqrestore(&rx_queue_lock, flag);
 
 	nic->nic_priv_data = p_data;
+	p_data->nic = nic;
 
 	rcu_read_lock();
 
@@ -322,17 +335,21 @@ error:
 	return rc;
 }
 
+static struct uet_nic_ops raw_ops = {
+	.nic_getinfo			= uet_nic_raw_getinfo,
+	.nic_get_ipv4_nh			= uet_nic_raw_get_ipv4_nh,
+	.nic_tx_pkt				= uet_nic_raw_tx_pkt,
+	.nic_rx_pkt				= uet_nic_raw_rx_pkt,
+	.nic_rx_poll			= uet_nic_raw_rx_poll,
+	.nic_mr_reg				= uet_nic_raw_mr_reg,
+	.nic_mr_dereg			= uet_nic_raw_mr_dereg,
+	.nic_finalize			= uet_nic_raw_finalize,
+	.nic_initialize			= uet_nic_raw_initialize,
+};
+
 static int uet_nic_raw_init(void)
 {
-	uet_nic_getinfo_fn			= uet_nic_raw_getinfo;
-	uet_nic_get_ipv4_nh_fn		= uet_nic_raw_get_ipv4_nh;
-	uet_nic_tx_pkt_fn			= uet_nic_raw_tx_pkt;
-	uet_nic_rx_pkt_fn			= uet_nic_raw_rx_pkt;
-	uet_nic_rx_poll_fn			= uet_nic_raw_rx_poll;
-	uet_nic_mr_reg_fn			= uet_nic_raw_mr_reg;
-	uet_nic_mr_dereg_fn			= uet_nic_raw_mr_dereg;
-	uet_nic_finalize_fn			= uet_nic_raw_finalize;
-	uet_nic_initialize_fn		= uet_nic_raw_initialize;
+	uet_nic_set_ops(&raw_ops);
 
 	spin_lock_init(&rx_queue_lock);
 	INIT_LIST_HEAD(&rx_queue);
@@ -349,15 +366,7 @@ static void uet_nic_raw_exit(void)
 
 	inet_del_protocol(&uet_protocol, UET_IPPROTO);
 
-	uet_nic_getinfo_fn			= NULL;
-	uet_nic_get_ipv4_nh_fn		= NULL;
-	uet_nic_tx_pkt_fn			= NULL;
-	uet_nic_rx_pkt_fn			= NULL;
-	uet_nic_rx_poll_fn			= NULL;
-	uet_nic_mr_reg_fn			= NULL;
-	uet_nic_mr_dereg_fn			= NULL;
-	uet_nic_finalize_fn			= NULL;
-	uet_nic_initialize_fn		= NULL;
+	uet_nic_set_ops(NULL);
 
 	spin_lock_irqsave(&rx_queue_lock, flag);
 	list_for_each(entry, &rx_queue) {
