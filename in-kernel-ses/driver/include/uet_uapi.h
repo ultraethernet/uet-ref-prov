@@ -29,7 +29,7 @@
 #define UET_TAG_RENDEZVOUS_SIZE		8192
 
 #define UET_MAX_MSG_ID		0xffff
-#define UET_MAX_MSG_SIZE	(0xffffffff - 1)
+//#define UET_MAX_MSG_SIZE	(0xffffffff - 1)
 
 #define UET_MAX_RTR_TOKEN	0xffff
 #define UET_RTR_TOKEN_NONE	0

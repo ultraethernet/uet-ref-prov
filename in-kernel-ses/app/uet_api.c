@@ -41,6 +41,12 @@
 
 #include "uet_api.h"
 
+
+// FIXME: start of uet_api_private.h
+#define UET_MAX_MSG_SIZE      (0xffffffff - 1)
+
+// FIXME end of uet_api_private.h
+
 /* nic operation close function */
 static int uet_nic_close(struct fid *fid)
 {

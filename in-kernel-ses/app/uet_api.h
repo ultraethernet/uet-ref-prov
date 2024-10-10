@@ -8,6 +8,8 @@
 #ifndef _UET_API_H_
 #define _UET_API_H_
 
+#include <stdio.h>
+#include <arpa/inet.h>
 #include <sys/uio.h> /* get struct iovec */
 
 /* include libfabric data structs */
