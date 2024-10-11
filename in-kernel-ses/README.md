@@ -124,6 +124,34 @@ sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.
 sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.sh" QEMU_BRIDGE=brtest0 QEMU_INSTANCE=2 make tools/vmtest
 ```
 
+## Run fi_pingpong with vmtest
+
+### Compile uet-libfabric
+
+```
+git clone git@github.com:rabhunia-keysight/uet-libfabric-kernel-ses.git
+cd uet-libfabric-kernel-ses
+git submodule sync
+git submodule update --init --recursive --remote
+./autogen.sh
+./configure --enable-only --enable-uet --enable-debug --prefix=<<install directory full path>> --disable-dependency-tracking
+make -j
+gcc -Wall -g -O0 -Wall -Wundef -Wpointer-arith -fstack-protector-strong -Wno-missing-field-initializers -Wno-sign-compare -Wno-unused-parameter -Wextra -pipe -fvisibility=hidden -Wall -Wundef -Wpointer-arith -static -o util/.libs/fi_pingpong util/pingpong.o  src/.libs/libfabric.a -latomic -lpthread -ldl
+cp util/.libs/fi_pingpong ../uet-linux-kernel-memmapped-q/.build/
+```
+
+### Start server
+
+```
+sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.sh" QEMU_BRIDGE=brtest0 QEMU_INSTANCE=5 make tools/vmtest
+```
+
+### Start client
+
+```
+sudo QEMU_KERNEL_APPEND="vmtest.autorun=/run/kernel/source/drivers/uecon/vmtest.sh" QEMU_BRIDGE=brtest0 QEMU_INSTANCE=4 make tools/vmtest
+```
+
 ## Status and Pending Issues
 
 Currently, untagged send / recv of 4KBytes with ROD was tested to be working with 2 iterations.
