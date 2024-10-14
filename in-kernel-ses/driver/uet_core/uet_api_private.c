@@ -1,5 +1,6 @@
 
 #include <linux/types.h>
+#include <linux/sched.h>
 
 #include "uet_pkt_hdr.h"
 //#include "uet_sec.h"
@@ -3678,8 +3679,9 @@ ssize_t uet_send_req_api_common(
 	return 0;
 }
 
-static void uet_instance_task(struct tasklet_struct *task)
+static void uet_instance_task(unsigned long data)
 {
+	struct tasklet_struct *task = (struct tasklet_struct *) data;
 	struct uet_instance *uet = 
 		container_of(task, struct uet_instance, task);
 	uet_pkt_handle_t err_pkt_handle;
@@ -3767,7 +3769,7 @@ int uet_initialize_internal(uet_handle_t *handle)
 
 	init_waitqueue_head(&uet->task_wait_queue);
 	spin_lock_init(&uet->biglock);
-	tasklet_setup(&uet->task, uet_instance_task);
+	tasklet_init(&uet->task, uet_instance_task, (unsigned long)&uet->task);
 
 	rc = uet_pds_init(uet);
 	if (rc != 0)
@@ -4501,7 +4503,7 @@ int uet_mr_close_internal(uet_mr_handle_t mr_handle)
 unsigned int uet_poll_internal(uet_handle_t uet_handle, 
 		struct file *filp, struct poll_table_struct *wait)
 {
-	__poll_t mask = 0;
+	unsigned int mask = 0;
 	struct uet_instance *uet = (struct uet_instance *) uet_handle;
 	unsigned long flags;
 

@@ -127,10 +127,10 @@ struct uet_av_entry {
 #define UET_NH_MAC_ADDR_V (1 << 0)  /* flag bit indicating next-hop mac valid */
 	uint16_t flags;
 	uint8_t nh_mac_addr[ETH_ALEN];                /* next-hop mac address */
-	_Atomic size_t num_active_ops; /* num active operations using this av */
+	size_t num_active_ops; /* num active operations using this av */
 			    /* ses generation for untagged msg's to this dest */
-	_Atomic uint32_t untagged_gen;
-	_Atomic uint32_t tagged_gen; /* ses gen for tagged msg's to this dest */
+	uint32_t untagged_gen;
+	uint32_t tagged_gen; /* ses gen for tagged msg's to this dest */
 		/* sequence numbers are assigned to each msg to be sent to    */
 		/* this av, and msg's are sent in sequence number order,      */
 		/* needed to maintain order for retransmissions over rod      */
@@ -277,7 +277,7 @@ struct uet_instance {
 	struct uet_msg_id_cb msg_id_cb;        /* used for assigning msg id's */
 	spinlock_t biglock;                        /* FIXME Per-instance lock */
 	struct tasklet_struct task;                   /* Per-instance tasklet */
-	struct wait_queue_head task_wait_queue;    /* Task waitqueue for poll */
+	wait_queue_head_t task_wait_queue;    /* Task waitqueue for poll */
 	atomic_t send_complete;
 	atomic_t recv_complete;
 				      /* used for assigning tx restart tokens */

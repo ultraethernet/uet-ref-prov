@@ -4,12 +4,12 @@
  */
 
 #include <linux/types.h>
-#include <linux/kstrtox.h>
 #include <asm-generic/errno-base.h>
 #include <linux/if_ether.h>
 #include <linux/ipv6.h>
 #include <linux/udp.h>
 #include <linux/ip.h>
+#include <linux/module.h>
 
 #include "uthash.h"
 

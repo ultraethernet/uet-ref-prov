@@ -227,7 +227,7 @@ struct uet_cq_entry {
 	uint64_t		src_addr;
 };
 
-#define UET_IOCTL_BASE					_IO('U', 0)
+#define UET_IOCTL_BASE	0
 
 #define UET_IOCTL_INSTANCE_CREATE		(UET_IOCTL_BASE + 1)
 #define UET_IOCTL_INSTANCE_FINALIZE		(UET_IOCTL_BASE + 2)
