@@ -836,7 +836,7 @@ exit:
 static unsigned int uet_poll(struct file *filp, struct poll_table_struct *wait)
 {
 	struct uet_dev *dev = (struct uet_dev *) filp->private_data;
-	__poll_t mask = 0;
+	unsigned int mask = 0;
 
 	pr_info("uet: (IN) %s\n", __func__);
 	down(&dev->sem);

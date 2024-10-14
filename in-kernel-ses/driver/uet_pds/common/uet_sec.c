@@ -4,7 +4,6 @@
  */
 
 #include <linux/stddef.h>
-#include <linux/kstrtox.h>
 
 //#include "uet_api_private.h"
 #include "uet_pkt_hdr.h"

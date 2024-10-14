@@ -307,7 +307,7 @@ static int uet_nic_raw_initialize(struct uet_nic *nic)
 		goto error;
 	}
 
-	in_dev_for_each_ifa_rcu(ifa, in_dev) {
+	for (ifa = (in_dev)->ifa_list; ifa; ifa = ifa->ifa_next) {
 		nic->ipv4_addr = ifa->ifa_address;
 		break;
 	}

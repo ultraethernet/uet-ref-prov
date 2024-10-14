@@ -1,9 +1,9 @@
 
 
-CC=gcc
-RANLIB=ranlib
-AR=ar
-CLANG=clang
+CC ?= gcc
+RANLIB ?= ranlib
+AR ?= ar
+CLANG ?= clang
 
 
 CFLAGS=-Wall                              \
@@ -14,7 +14,7 @@ CFLAGS=-Wall                              \
 
 LIBFABRIC=../../../libfabric
 INCS=-I$(LIBFABRIC) -I$(LIBFABRIC)/include -I. -I../driver/include
-LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric
+LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric -lrt -ldl -lpthread
 
 
 %.o: %.c
