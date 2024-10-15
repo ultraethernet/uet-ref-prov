@@ -805,8 +805,10 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 		default:
 			if (pp->ethertype == UET_IPPROTO)
 				done = true;
-			else
+			else {
+				pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 				goto err_exit;
+			}
 			break;
 		}
 	}
@@ -827,10 +829,13 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 			ethertype = ETH_P_IPV6;
 			break;
 		default:
+			pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 			goto err_exit;
 		}
-	} else
+	} else {
 		ethertype = pp->ethertype;
+	}
+
 	switch (ethertype) {
 	case ETH_P_IP:
 		ipv4 = (struct iphdr *) p;
@@ -839,10 +844,13 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 		break;
 	case ETH_P_IPV6:
 		rc = uet_get_ipv6_nexthdr(pp);
-		if (rc != 0)
+		if (rc != 0) {
+			pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 			return rc;
+		}
 		break;
 	default:
+		pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 		goto err_exit;
 	}
 
@@ -856,10 +864,14 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 			udp = (struct udphdr *) p;
 			rc = uet_parse_chk_next_field(
 				pp, cur_len, sizeof(struct udphdr));
-			if (rc != 0)
+			if (rc != 0) {
+				pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 				return rc;
-			if (ntohs(udp->dest) != uet_udp_port)
+			}
+			if (ntohs(udp->dest) != uet_udp_port) {
+				pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 				goto err_exit;
+			}
 			pp->entropy = ntohs(udp->source);
 			pp->udp = p;
 			pp->udp_len = sizeof(struct udphdr);
@@ -867,6 +879,7 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 			p = ((uint8_t *) pkt) + cur_len;
 			break;
 		default:
+			pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 			goto err_exit;
 		}
 	}
@@ -874,8 +887,11 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 	/* parse security header */
 	pds_prlg = (struct uet_pds_prlg *) p;
 	rc = uet_parse_chk_next_field(pp, cur_len, sizeof(struct uet_pds_prlg));
-	if (rc != 0)
+	if (rc != 0) {
+		pr_err("%s: parsing error at %d. pp->pkt_len: %d cur_len: %d field len: %d\n", 
+			__func__, __LINE__, pp->pkt_len, cur_len, sizeof(struct uet_pds_prlg));
 		return rc;
+	}
 	if (pp->udp_len == 0)
 		pp->entropy = ntohs(pds_prlg->entropy);
 	pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
@@ -883,8 +899,10 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 			UET_PDS_TYPE_SHIFT);
 	if (pp->pds_type == UET_PDS_TYPE_SECURITY) {
 		if (((pds_type_next_flags & UET_PDS_NEXT_HDR_MASK) >>
-		      UET_PDS_NEXT_HDR_SHIFT) != UET_HDR_PDS)
+		      UET_PDS_NEXT_HDR_SHIFT) != UET_HDR_PDS) {
+			pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 			goto err_exit;
+		}
 		pp->sec = pds_prlg;
 		if (pds_type_next_flags & UET_SEC_SP_MASK) {
 			sec_ssi = (struct uet_sec_ssi *)pds_prlg;
@@ -911,8 +929,10 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 		pds_prlg = (struct uet_pds_prlg *) p;
 		rc = uet_parse_chk_next_field(
 				pp, cur_len, sizeof(struct uet_pds_prlg));
-		if (rc != 0)
+		if (rc != 0) {
+			pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 			return rc;
+		}
 		pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
 		pp->pds_type = (pds_type_next_flags & UET_PDS_TYPE_MASK) >>
 			       UET_PDS_TYPE_SHIFT;
@@ -974,6 +994,7 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 	case UET_PDS_TYPE_RUDI_RESP:
 		/* TODO: support for parsing RUDI */
 	default:
+		pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 		goto err_exit;
 	}
 
@@ -986,8 +1007,10 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 	case UET_HDR_REQ_STD:
 		rc = uet_parse_chk_next_field(
 			pp, cur_len, sizeof(struct uet_ses_req_std));
-		if (rc != 0)
+		if (rc != 0) {
+			pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 			return rc;
+		}
 		pp->ses_len = sizeof(struct uet_ses_req_std);
 		ses_req = (struct uet_ses_req_std *) pp->ses;
 		pp->ses_opcode = (ses_req->cmn.eom_opcode &
@@ -1024,16 +1047,20 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 		if (pp->ses_opcode != UET_READ) {
 			rc = uet_parse_chk_next_field(
 					pp, cur_len, pp->ses_payload_len);
-			if (rc != 0)
+			if (rc != 0) {
+				pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 				return rc;
+			}
 			cur_len += pp->ses_payload_len;
 		}
 
 		if (ses_req->cmn.ver_flags & UET_SES_REQ_FLAG_CRC) {
 			rc = uet_parse_chk_next_field(
 					pp, cur_len, UET_SES_CRC_SIZE);
-			if (rc != 0)
+			if (rc != 0) {
+				pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 				return rc;
+			}
 			pp->ses_crc = ((uint8_t *) pkt) + cur_len;
 			cur_len += UET_SES_CRC_SIZE;
 		}
@@ -1048,15 +1075,19 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 			rc = uet_parse_chk_next_field(
 					pp, cur_len,
 					sizeof(struct uet_pds_def_rsp));
-			if (rc != 0)
+			if (rc != 0) {
+				pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 				return rc;
+			}
 			pp->ses_len = sizeof(struct uet_pds_def_rsp);
 		} else {
 			rc = uet_parse_chk_next_field(
 					pp, cur_len,
 					sizeof(struct uet_ses_rsp));
-			if (rc != 0)
+			if (rc != 0) {
+				pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 				return rc;
+			}
 			pp->ses_len = sizeof(struct uet_ses_rsp);
 		}
 
@@ -1066,8 +1097,10 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 	case UET_HDR_RSP_DATA:
 		rc = uet_parse_chk_next_field(
 				pp, cur_len, sizeof(struct uet_ses_rsp_d));
-		if (rc != 0)
+		if (rc != 0) {
+			pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 			return rc;
+		}
 		pp->ses_len = sizeof(struct uet_ses_rsp_d);
 		cur_len += pp->ses_len;
 		pp->hdr_len = cur_len;
@@ -1085,14 +1118,17 @@ static int uet_parse_pkt(void *pkt, size_t pkt_len, struct uet_parsed_pkt *pp,
 			__func__, __LINE__, ses_rsp_d->rsvd_payload_len, 
 			pp->ses_payload_len);
 		rc = uet_parse_chk_next_field(pp, cur_len, pp->ses_payload_len);
-		if (rc != 0)
+		if (rc != 0) {
+			pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 			return rc;
+		}
 		cur_len += pp->ses_payload_len;
 		break;
 	case UET_HDR_REQ_SMALL:
 	case UET_HDR_REQ_MEDIUM:
 	case UET_HDR_RSP_DATA_SMALL:
 	default:
+		pr_err("%s: parsing error at %d\n", __func__, __LINE__);
 		goto err_exit;
 	}
 
@@ -1241,7 +1277,7 @@ static int uet_pds_sec_rx_pkt(struct uet_instance *uet,
 	rc = uet_nic_rx_pkt(UET_NIC(uet),
 			    *pkt,
 			    uet->nic.max_pkt_size,
-			    (size_t *)pkt_len);
+			    pkt_len);
 	if (rc != 1)
 		goto err_exit;
 

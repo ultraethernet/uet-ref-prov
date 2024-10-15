@@ -24,7 +24,7 @@ static int (*uet_nic_tx_pkt_fn)(struct uet_nic *nic,
 static int (*uet_nic_rx_pkt_fn)(struct uet_nic *nic,
 			      void *pkt,
 			      size_t pkt_buf_size,
-			      size_t *rx_pkt_size);
+			      int *rx_pkt_size);
 static int (*uet_nic_rx_poll_fn)(struct uet_nic *nic);
 static int (*uet_nic_mr_reg_fn)(struct uet_nic *nic,
 			      struct uet_mr_buf_desc *desc,

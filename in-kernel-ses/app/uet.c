@@ -1132,6 +1132,7 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 				if (rc != UET_SUCCESS_RC)
 					goto exit;
 			}
+			sleep(1);
 		} else { /* server */
 			if (ctx->cfg.rma) {
 				rc = uet_rma_server(ctx);

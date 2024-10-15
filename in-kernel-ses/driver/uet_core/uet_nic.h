@@ -38,7 +38,7 @@ struct uet_nic_ops {
 	int (*nic_rx_pkt)(struct uet_nic *nic,
 			  void *pkt,
 			  size_t pkt_buf_size,
-			  size_t *rx_pkt_size);
+			  int *rx_pkt_size);
 	int (*nic_mr_reg)(struct uet_nic *nic,
 			  struct uet_mr_buf_desc *desc,
 			  uet_nic_mr_handle_t *handle);
@@ -188,7 +188,7 @@ static inline int uet_nic_tx_pkt(struct uet_nic *nic,
 static inline int uet_nic_rx_pkt(struct uet_nic *nic,
 				 void *pkt,
 				 size_t pkt_buf_size,
-				 size_t *rx_pkt_size)
+				 int *rx_pkt_size)
 {
 	if (!nic || !pkt || !pkt_buf_size || 
 	    !rx_pkt_size || !nic->ops.nic_rx_pkt)

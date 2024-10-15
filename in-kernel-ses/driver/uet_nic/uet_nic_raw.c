@@ -1,6 +1,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/version.h>
 #include <net/protocol.h>
 #include <linux/spinlock.h>
 #include <linux/ip.h>
@@ -89,6 +90,9 @@ static const struct net_protocol uet_protocol = {
 	.handler		= uet_pkt_receiver,
 	.err_handler	= uet_pkt_err_handler,
 	.no_policy		= 1,
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(3,10,0)
+	.netns_ok		= 1,
+#endif
 };
 
 static int uet_nic_raw_getinfo(struct uet_nic *nic,
@@ -164,15 +168,20 @@ static int uet_nic_raw_tx_pkt(struct uet_nic *nic,
 }
 
 static int uet_nic_raw_rx_pkt(struct uet_nic *nic,
-			void *pkt, size_t pkt_buf_size, size_t *rx_pkt_size)
+			void *pkt, size_t pkt_buf_size, int *rx_pkt_size)
 {
 	struct uet_nic_data *p_data = 
 		(struct uet_nic_data *)nic->nic_priv_data;
 	struct sk_buff *skb = skb_dequeue(&p_data->queue.pkts);
 
-	pr_info("uet_nic: [%s] pkt len: %d. skb->data_len: %d (%d:%d:%d)\n", __func__, 
-		skb->len + skb->transport_header, 
-		skb->data_len, skb->transport_header, skb->network_header, skb->mac_header);
+	if (skb == NULL) {
+		pr_info("uet_nic: [%s] RX queue empty.\n", __func__);
+		return 0;
+	}
+
+	pr_info("uet_nic: [%s] len: %d data_len: %d transport: %d network: %d mac: %d\n", 
+			__func__, skb->len, skb->data_len, skb->transport_header, 
+			skb->network_header, skb->mac_header);
 
 	memcpy(pkt, skb_mac_header(skb), 
 		skb->len + skb->transport_header - skb->mac_header);

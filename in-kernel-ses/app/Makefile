@@ -5,6 +5,7 @@ RANLIB ?= ranlib
 AR ?= ar
 CLANG ?= clang
 
+LIBFABRIC ?= ../../../libfabric
 
 CFLAGS=-Wall                              \
        -Wno-unused-variable               \
@@ -12,7 +13,6 @@ CFLAGS=-Wall                              \
        -Wno-int-conversion                \
        -Wno-address-of-packed-member
 
-LIBFABRIC=../../../libfabric
 INCS=-I$(LIBFABRIC) -I$(LIBFABRIC)/include -I. -I../driver/include
 LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric -lrt -ldl -lpthread
 
