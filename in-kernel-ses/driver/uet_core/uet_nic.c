@@ -31,8 +31,8 @@ static int (*uet_nic_mr_reg_fn)(struct uet_nic *nic,
 			      uet_nic_mr_handle_t *handle);
 static int (*uet_nic_mr_dereg_fn)(struct uet_nic *nic,
 				uet_nic_mr_handle_t handle);
-static void (*uet_nic_finalize_fn)(struct uet_nic *nic);
-static int (*uet_nic_initialize_fn)(struct uet_nic *nic);
+static void (*uet_nic_finalize_fn)(struct uet_nic *nic, int inst_id);
+static int (*uet_nic_initialize_fn)(struct uet_nic *nic, int inst_id);
 
 void uet_nic_set_ops(struct uet_nic_ops *ops)
 {
@@ -60,7 +60,7 @@ void uet_nic_set_ops(struct uet_nic_ops *ops)
 EXPORT_SYMBOL(uet_nic_set_ops);
 
 /* init nic resources */
-int uet_nic_initialize(struct uet_nic *nic)
+int uet_nic_initialize(struct uet_nic *nic, int inst_id)
 {
 	nic->ops.nic_getinfo     = uet_nic_getinfo_fn;
 	nic->ops.nic_get_ipv4_nh = uet_nic_get_ipv4_nh_fn;
@@ -75,6 +75,6 @@ int uet_nic_initialize(struct uet_nic *nic)
 	if (!nic->ops.nic_initialize)
 		BUG();
 
-	return nic->ops.nic_initialize(nic);
+	return nic->ops.nic_initialize(nic, inst_id);
 }
 

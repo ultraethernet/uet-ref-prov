@@ -2,6 +2,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/version.h>
+#include <linux/proc_fs.h>
 #include <net/protocol.h>
 #include <linux/spinlock.h>
 #include <linux/ip.h>
@@ -15,6 +16,16 @@
 #include "uet_util.h"
 #include "uet_pkt_hdr.h"
 #include "uet_def.h"
+
+struct uet_raw_nic_dev {
+	char ifname[IFNAMSIZ];
+	char uetdev[IFNAMSIZ];
+	int used;
+};
+
+#define UET_DEV_MAX 16
+
+static struct uet_raw_nic_dev uet_devs[UET_DEV_MAX];
 
 struct uet_umem {
 	void *addr;
@@ -34,10 +45,6 @@ struct uet_nic_data {
 
 static spinlock_t rx_queue_lock;
 static struct list_head rx_queue;
-
-// FIXME: Should support more than one interface
-static char param_ifname[IFNAMSIZ];
-module_param_string(param_ifname, param_ifname, IFNAMSIZ, 0);
 
 static int uet_pkt_receiver(struct sk_buff *skb)
 {
@@ -252,7 +259,7 @@ static int uet_nic_raw_mr_dereg(struct uet_nic *nic,
 	return 0;
 }
 
-static void uet_nic_raw_finalize(struct uet_nic *nic)
+static void uet_nic_raw_finalize(struct uet_nic *nic, int inst_id)
 {
 	struct uet_nic_data *p_data = 
 		(struct uet_nic_data *)nic->nic_priv_data;
@@ -270,17 +277,17 @@ static void uet_nic_raw_finalize(struct uet_nic *nic)
 	return;
 }
 
-static int uet_nic_raw_initialize(struct uet_nic *nic)
+static int uet_nic_raw_initialize(struct uet_nic *nic, int inst_id)
 {
 	struct uet_nic_data *p_data = NULL;
 	unsigned long flag;
-	struct net_device *dev = dev_get_by_name(&init_net, param_ifname);
+	struct net_device *dev = dev_get_by_name(&init_net, uet_devs[inst_id].ifname);
 	const struct in_ifaddr *ifa;
 	struct in_device *in_dev;
 	int rc;
 
 	if (dev == NULL) {
-		pr_err("uet_nic: Device not found: %s\n", param_ifname);
+		pr_err("uet_nic: Device not found: %s\n", uet_devs[inst_id].ifname);
 		return -ENODEV;
 	}
 
@@ -289,7 +296,7 @@ static int uet_nic_raw_initialize(struct uet_nic *nic)
 	nic->min_ip_pkt_size = (nic->min_pkt_size - nic->l2_hdr_size);
 	strncpy(nic->network_type, "in-kernel-nic-raw", UET_NET_TYPE_SIZE);
 
-	strncpy(nic->ifname, param_ifname, IFNAMSIZ);
+	strncpy(nic->ifname, uet_devs[inst_id].ifname, IFNAMSIZ);
 
 	p_data = kcalloc(1, sizeof(struct uet_nic_data), GFP_KERNEL);
 	if (p_data == NULL) {
@@ -356,14 +363,118 @@ static struct uet_nic_ops raw_ops = {
 	.nic_initialize			= uet_nic_raw_initialize,
 };
 
+static int uet_nic_open_proc(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+static ssize_t	uet_nic_show_proc(struct file *file, char __user *buf, 
+		size_t len, loff_t *offset)
+{
+	int i, count = 0;
+
+	for (i = 0; i < UET_DEV_MAX; i++) {
+		if (uet_devs[i].used)
+			count += sprintf(buf + count, "%d %s %s\n", i, 
+					uet_devs[i].ifname, uet_devs[i].uetdev);
+	}
+
+	return count;
+}
+
+static ssize_t uet_nic_add_write_proc(struct file *file, 
+		const char __user *buf, size_t len, loff_t *offset)
+{
+	char ifname[IFNAMSIZ], uetdev[IFNAMSIZ];
+	int i;
+
+	sscanf(buf, "%s %s", ifname, uetdev);
+
+	for (i = 0; i < UET_DEV_MAX; i++) {
+		if (uet_devs[i].used == 0)
+			break;
+	}
+
+	strcpy(uet_devs[i].ifname, ifname);
+	strcpy(uet_devs[i].uetdev, uetdev);
+	uet_devs[i].used = 1;
+
+	return len;
+}
+
+static ssize_t uet_nic_del_write_proc(struct file *file, 
+		const char __user *buf, size_t len, loff_t *offset)
+{
+	int idx;
+
+	sscanf(buf, "%d", &idx);
+	uet_devs[idx].used = 0;
+
+	return len;
+}
+
+static int uet_nic_release_proc(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,5)
+static struct proc_ops proc_show_fops = {
+	.proc_open	= uet_nic_open_proc,
+	.proc_read	= uet_nic_show_proc,
+	.proc_release	= uet_nic_release_proc,
+};
+
+static struct proc_ops proc_add_fops = {
+	.proc_open	= uet_nic_open_proc,
+	.proc_write	= uet_nic_add_write_proc,
+	.proc_release	= uet_nic_release_proc,
+};
+
+static struct proc_ops proc_del_fops = {
+	.proc_open	= uet_nic_open_proc,
+	.proc_write	= uet_nic_add_write_proc,
+	.proc_release	= uet_nic_release_proc,
+};
+#else
+static struct file_operations proc_show_fops = {
+	.open		= uet_nic_open_proc,
+	.read		= uet_nic_show_proc,
+	.release	= uet_nic_release_proc,
+};
+
+static struct file_operations proc_add_fops = {
+	.open		= uet_nic_open_proc,
+	.write		= uet_nic_add_write_proc,
+	.release	= uet_nic_release_proc,
+};
+
+static struct file_operations proc_del_fops = {
+	.open		= uet_nic_open_proc,
+	.write		= uet_nic_add_write_proc,
+	.release	= uet_nic_release_proc,
+};
+#endif
+static struct proc_dir_entry *uet_proc_parent;
+
 static int uet_nic_raw_init(void)
 {
+	int i;
+
 	uet_nic_set_ops(&raw_ops);
 
 	spin_lock_init(&rx_queue_lock);
 	INIT_LIST_HEAD(&rx_queue);
 
 	inet_add_protocol(&uet_protocol, UET_IPPROTO);
+
+	for (i = 0; i < UET_DEV_MAX; i++)
+		memset(&uet_devs[i], 0, sizeof(struct uet_raw_nic_dev));
+
+	uet_proc_parent = proc_mkdir("uet",NULL);
+	proc_create("show", 0666, uet_proc_parent, &proc_show_fops);
+	proc_create("add", 0666, uet_proc_parent, &proc_add_fops);
+	proc_create("del", 0666, uet_proc_parent, &proc_del_fops);
 
 	return 0;
 }
@@ -372,6 +483,8 @@ static void uet_nic_raw_exit(void)
 {
 	unsigned long flag;
 	struct list_head *entry;
+
+	proc_remove(uet_proc_parent);
 
 	inet_del_protocol(&uet_protocol, UET_IPPROTO);
 

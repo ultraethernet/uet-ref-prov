@@ -411,9 +411,9 @@ struct uet_ack_d_info {
 };
 
 
-extern int uet_initialize_internal(uet_handle_t *handle);
+extern int uet_initialize_internal(uet_handle_t *handle, int inst_id);
 
-extern int uet_finalize_internal(uet_handle_t handle);
+extern int uet_finalize_internal(uet_handle_t handle, int inst_id);
 
 extern int uet_nic_getinfo_internal(uet_handle_t handle, 
 		struct uet_nic_info *nic_info);

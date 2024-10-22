@@ -28,6 +28,7 @@ int uet_num_minor = UET_MAX_MINOR;
 char* uet_name = DEVICE_NAME;
 
 struct uet_dev {
+	int inst_id;
 	struct cdev cdev;
 	uet_handle_t uet;
 	struct semaphore sem;
@@ -50,7 +51,7 @@ static int uet_open(struct inode *inode, struct file *filp)
 		goto exit;
 	}
 
-	rc = uet_initialize_internal(&dev->uet);
+	rc = uet_initialize_internal(&dev->uet, dev->inst_id);
 	if (rc) {
 		pr_err("uet: failed to create uet instance.\n");
 		goto exit;
@@ -75,7 +76,7 @@ static int uet_release(struct inode *inode, struct file *filp)
 	if (dev->uet == NULL) {
 		pr_warn("uet: instance closed unexpectedly.\n");
 	} else {
-		uet_finalize_internal(dev->uet);
+		uet_finalize_internal(dev->uet, dev->inst_id);
 		dev->uet = NULL;
 	}
 
@@ -871,6 +872,7 @@ static void uet_setup_cdev(void)
 		cdev_add(&uet_devs[i].cdev, devno, 1);
 		sema_init(&uet_devs[i].sem, 1);
 		uet_devs[i].uet = NULL;
+		uet_devs[i].inst_id = i;
 	}
 }
 
@@ -881,7 +883,7 @@ static void uet_destroy_cdev(void)
 	for (i = 0; i < uet_num_minor; i++) {
 		down(&uet_devs[i].sem);
 		if (uet_devs[i].uet) {
-			uet_finalize_internal(uet_devs[i].uet);
+			uet_finalize_internal(uet_devs[i].uet, i);
 		}
 		up(&uet_devs[i].sem);
 		cdev_del(&uet_devs[i].cdev);

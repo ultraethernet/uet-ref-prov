@@ -45,8 +45,8 @@ struct uet_nic_ops {
 	int (*nic_mr_dereg)(struct uet_nic *nic,
 			    uet_nic_mr_handle_t handle);
 	int (*nic_rx_poll)(struct uet_nic *nic);
-	void (*nic_finalize)(struct uet_nic *nic);
-	int (*nic_initialize)(struct uet_nic *nic);
+	void (*nic_finalize)(struct uet_nic *nic, int inst_id);
+	int (*nic_initialize)(struct uet_nic *nic, int inst_id);
 };
 
 /* nic control block structure - field of struct uet_instance */
@@ -88,7 +88,7 @@ struct uet_nic {
  *      FI_SUCCESS on success
  *      negative value corresponding to fabric errno on error
  */
-int uet_nic_initialize(struct uet_nic *nic);
+int uet_nic_initialize(struct uet_nic *nic, int inst_id);
 
 /*
  * free nic resources
@@ -96,12 +96,12 @@ int uet_nic_initialize(struct uet_nic *nic);
  * parms:
  *      uet - ptr to uet nic struct
  */
-static inline void uet_nic_finalize(struct uet_nic *nic)
+static inline void uet_nic_finalize(struct uet_nic *nic, int inst_id)
 {
 	if (!nic || !nic->ops.nic_finalize)
 		BUG();
 
-	return nic->ops.nic_finalize(nic);
+	return nic->ops.nic_finalize(nic, inst_id);
 }
 
 /*

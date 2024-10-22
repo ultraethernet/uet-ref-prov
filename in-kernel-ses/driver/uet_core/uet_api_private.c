@@ -1410,10 +1410,10 @@ static void uet_domain_free_all(struct uet_instance *uet)
 }
 
 /* free most resources associated with uet instance */
-static void uet_finalize_core(struct uet_instance *uet)
+static void uet_finalize_core(struct uet_instance *uet, int inst_id)
 {
 	uet_ipv4_ep_hash_finalize(uet);
-	uet_nic_finalize(UET_NIC(uet));
+	uet_nic_finalize(UET_NIC(uet), inst_id);
 	uet_domain_free_all(uet);
 }
 
@@ -3733,7 +3733,7 @@ static void uet_instance_task(unsigned long data)
 	pr_info("(OUT) %s\n", __func__);
 }
 
-int uet_initialize_internal(uet_handle_t *handle)
+int uet_initialize_internal(uet_handle_t *handle, int inst_id)
 {
 	int rc;
 	struct uet_instance *uet;
@@ -3776,7 +3776,7 @@ int uet_initialize_internal(uet_handle_t *handle)
 		goto err_return;
 
 	UET_NIC(uet)->uet_ipproto = uet->uet_ipproto;
-	rc = uet_nic_initialize(UET_NIC(uet));
+	rc = uet_nic_initialize(UET_NIC(uet), inst_id);
 	if (rc != 0)
 		goto err_return;
 
@@ -3791,13 +3791,13 @@ err_return:
 	return rc;
 }
 
-int uet_finalize_internal(uet_handle_t handle)
+int uet_finalize_internal(uet_handle_t handle, int inst_id)
 {
 	struct uet_instance *uet;
 
 	uet = (struct uet_instance *) handle;
 	tasklet_kill(&uet->task);
-	uet_finalize_core(uet);
+	uet_finalize_core(uet, inst_id);
 	kfree(uet);
 
 	return 0;
