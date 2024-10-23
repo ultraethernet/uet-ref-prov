@@ -371,15 +371,25 @@ static int uet_nic_open_proc(struct inode *inode, struct file *file)
 static ssize_t	uet_nic_show_proc(struct file *file, char __user *buf, 
 		size_t len, loff_t *offset)
 {
-	int i, count = 0;
+	int i;
+	ssize_t count = 0, nbytes = 0;
+	loff_t pos = *offset;
+
+	if (pos > 0)
+		return 0;
 
 	for (i = 0; i < UET_DEV_MAX; i++) {
-		if (uet_devs[i].used)
-			count += sprintf(buf + count, "%d %s %s\n", i, 
+		if (uet_devs[i].used) {
+			count = sprintf(buf + pos, "%d %s %s\n", i, 
 					uet_devs[i].ifname, uet_devs[i].uetdev);
+			pos += count;
+			nbytes += count;
+		}
 	}
 
-	return count;
+	*offset = pos;
+
+	return nbytes;
 }
 
 static ssize_t uet_nic_add_write_proc(struct file *file, 
@@ -433,7 +443,7 @@ static struct proc_ops proc_add_fops = {
 
 static struct proc_ops proc_del_fops = {
 	.proc_open	= uet_nic_open_proc,
-	.proc_write	= uet_nic_add_write_proc,
+	.proc_write	= uet_nic_del_write_proc,
 	.proc_release	= uet_nic_release_proc,
 };
 #else
