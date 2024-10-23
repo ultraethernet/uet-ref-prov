@@ -29,8 +29,8 @@ Block diagram -
 
 Make sure the proper development libraries/headers are installed:
 ```
-% sudo apt install linux-headers-$(uname -r)
-% sudo apt install gcc gcc-multilib clang libbpf-dev libxdp-dev
+sudo apt install linux-headers-$(uname -r)
+sudo apt install gcc gcc-multilib clang libbpf-dev libxdp-dev
 ```
 
 ### libfabric
@@ -42,20 +42,20 @@ later is needed. The directory name needs to be 'libfabric'. The steps
 below build libfabric v1.20.1 and use a symlink for the common name.
 
 ```
-% cd ..
-% wget https://github.com/ofiwg/libfabric/releases/download/v1.20.1/libfabric-1.20.1.tar.bz2
-% tar -jxvf libfabric-1.20.1.tar.bz2
-% ln -s libfabric-1.20.1 libfabric
-% cd libfabric
-% autoreconf
-% ./configure
-% make -j
+cd ..
+wget https://github.com/ofiwg/libfabric/releases/download/v1.20.1/libfabric-1.20.1.tar.bz2
+tar -jxvf libfabric-1.20.1.tar.bz2
+ln -s libfabric-1.20.1 libfabric
+cd libfabric
+autoreconf
+./configure
+make -j
 ```
 
 ## Build
 
 ```
-% make all
+make all
 ```
 
 ## Run
@@ -63,22 +63,24 @@ below build libfabric v1.20.1 and use a symlink for the common name.
 ### Server
 
 ```
-% sudo insmod uet_core.ko
-% sudo insmod uet_nic_raw.ko param_ifname=eth1
-% sudo insmod uet_pds_gen.ko
-% sudo mknod /dev/uet c 248 0
-% sudo UET_CHAR_DEV=/dev/uet LD_LIBRARY_PATH=../../libfabric/src/.libs ./uet server 192.168.1.2
+sudo insmod uet_core.ko
+sudo insmod uet_nic_raw.ko
+sudo insmod uet_pds_gen.ko
+sudo bash -c 'echo "eth1 uet0" > /proc/uet/add'
+sudo mknod /dev/uet0 c 248 0
+sudo UET_CHAR_DEV=/dev/uet0 LD_LIBRARY_PATH=../../libfabric/src/.libs ./uet server 192.168.1.2
 ```
 
 ### Client
 
 ```
-% sudo insmod uet_core.ko
-% sudo insmod uet_nic_raw.ko param_ifname=eth1
-% sudo insmod uet_pds_gen.ko
-% sudo mknod /dev/uet c 248 0
-% ping -c1 192.168.1.1
-% sudo UET_CHAR_DEV=/dev/uet LD_LIBRARY_PATH=../../libfabric/src/.libs ./uet client 192.168.1.1
+sudo insmod uet_core.ko
+sudo insmod uet_nic_raw.ko
+sudo insmod uet_pds_gen.ko
+sudo bash -c 'echo "eth1 uet0" > /proc/uet/add'
+sudo mknod /dev/uet0 c 248 0
+ping -c1 192.168.1.1
+sudo UET_CHAR_DEV=/dev/uet0 LD_LIBRARY_PATH=../../libfabric/src/.libs ./uet client 192.168.1.1
 ```
 
 ## Run with vmtest
@@ -86,29 +88,29 @@ below build libfabric v1.20.1 and use a symlink for the common name.
 ### Compile uet-linux-kernel
 
 ```
-% git clone git@github.com:rabhunia-keysight/uet-linux-kernel-memmapped-q.git
-% cd uet-linux-kernel-memmapped-q
-% git checkout memmapped-queues
-% git submodule update --init
-% make O=.build uet_defconfig
-% cd .build
-% make -j$(nproc) bzImage modules && make -j$(nproc) modules_install INSTALL_MOD_PATH=$(pwd)/.modstage
-% sudo brctl addbr brtest0
-% sudo ifconfig brtest0 up
+git clone git@github.com:rabhunia-keysight/uet-linux-kernel-memmapped-q.git
+cd uet-linux-kernel-memmapped-q
+git checkout memmapped-queues
+git submodule update --init
+make O=.build uet_defconfig
+cd .build
+make -j$(nproc) bzImage modules && make -j$(nproc) modules_install INSTALL_MOD_PATH=$(pwd)/.modstage
+sudo brctl addbr brtest0
+sudo ifconfig brtest0 up
 ```
 
 ### Compile uet-ref-prov
 
 ```
-% KDIR=../uet-linux-kernel-memmapped-q/.build make all
-% cp -vf in-kernel-ses/app/uet ../uet-linux-kernel-memmapped-q/.build/
-% cp -vf in-kernel-ses/driver/*.ko ../uet-linux-kernel-memmapped-q/.build/
+KDIR=../uet-linux-kernel-memmapped-q/.build make all
+cp -vf in-kernel-ses/app/uet ../uet-linux-kernel-memmapped-q/.build/
+cp -vf in-kernel-ses/driver/*.ko ../uet-linux-kernel-memmapped-q/.build/
 ```
 
 ### Start capture
 
 ```
-% sudo tcpdump -i brtest0 -w /tmp/uet.pcap
+sudo tcpdump -i brtest0 -w /tmp/uet.pcap
 ```
 
 ### Start server
