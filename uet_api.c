@@ -2359,6 +2359,7 @@ static uet_ses_rc_t uet_rx_cancel_pkt(
 
 post_err_exit:
 	uet_rx_cq_post_err(rx_desc, FI_EIO);
+	return ses_rc;
 
 err_exit:
 	*gtd_del = true;
