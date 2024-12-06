@@ -2452,6 +2452,9 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		job_id = uet_get_std_req_job_id(ses_std_req);
 		if (pp->ses_opcode != UET_DEFER_RTR) {
 			uet_ipv4_ep_key_init(&ipv4_ep_key, pp);
+			pr_info("[%s:%d] ipv4_addr=%x pid_on_fep=%u index=%u\n",
+				__func__, __LINE__, ipv4_ep_key.ipv4_addr, 
+				ipv4_ep_key.pid_on_fep, ipv4_ep_key.index);
 			uet_ep = uet_ipv4_ep_hash_lookup(uet, &ipv4_ep_key);
 			if (uet_ep == NULL) {
 				UET_API_ERR("RX: Unknown Endpoint");
@@ -2811,8 +2814,12 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 		(eom << UET_SES_EOM_SHIFT) | (opcode << UET_SES_OPCODE_SHIFT);
 	ses->cmn.rsvd_res_index = htons(av->addr->start_index <<
 					UET_SES_REQ_RES_INDEX_SHIFT);
+	pr_info("[%s:%d] ses->cmn.rsvd_res_index: %x av->addr->start_index: %x\n",
+			__func__, __LINE__, ses->cmn.rsvd_res_index, av->addr->start_index);
 	ses->cmn.rsvd_pid_on_fep = htons(av->addr->pid_on_fep <<
 					 UET_SES_REQ_PID_ON_FEP_SHIFT);
+	pr_info("[%s:%d] ses->cmn.rsvd_pid_on_fep: %x av->addr->pid_on_fep: %x\n",
+			__func__, __LINE__, ses->cmn.rsvd_pid_on_fep, av->addr->pid_on_fep);
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
 	ses->initiator = htonl(uet_ep->uet_addr.initiator_id);
 	ses->req_len = htonl((uint32_t) req_len);
@@ -4015,6 +4022,9 @@ int uet_endpoint_internal(uet_domain_handle_t domain_handle,
 	uet_ep->ipv4_ep_key.ipv4_addr = uet_ep->ipv4_addr;
 	uet_ep->ipv4_ep_key.pid_on_fep = uet_ep->uet_addr.pid_on_fep;
 	uet_ep->ipv4_ep_key.index = uet_ep->uet_addr.start_index;
+	pr_info("[%s:%d] ipv4_addr=%x pid_on_fep=%u index=%u\n",
+		__func__, __LINE__, uet_ep->ipv4_ep_key.ipv4_addr, 
+		uet_ep->ipv4_ep_key.pid_on_fep, uet_ep->ipv4_ep_key.index);
 	uet_ipv4_ep_hash_insert(uet_ep);
 
 	if (use_default_tos)
@@ -4291,7 +4301,11 @@ int uet_av_insert_internal(uet_domain_handle_t domain_handle,
 
 	addr = kcalloc(1, sizeof(struct uet_addr), GFP_KERNEL);
 	memcpy(addr, uet_addr, sizeof(struct uet_addr));
-	pr_info("uet: [%s] dst ip: %u.%u.%u.%u\n", __func__, UET_NIPQUAD(addr->fa.v4));
+	addr->pid_on_fep = UET_ADDR_DEF_PID_ON_FEP;
+	addr->start_index = UET_ADDR_DEF_INDEX;
+	pr_info("uet: [%s] dst ip: %u.%u.%u.%u pid_on_fep: %x(%u) start_index: %x(%u)\n", 
+		__func__, UET_NIPQUAD(addr->fa.v4), addr->pid_on_fep, addr->pid_on_fep,
+		addr->start_index, addr->start_index);
 
 	/* allocate memory for av object */
 	av_entry = kcalloc(1, sizeof(struct uet_av_entry), GFP_KERNEL);
