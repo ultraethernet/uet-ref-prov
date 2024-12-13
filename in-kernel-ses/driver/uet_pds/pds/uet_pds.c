@@ -1500,12 +1500,12 @@ static struct uet_pdc *uet_pdsm_get_pdc(uint16_t pdc_id,
 {
 	struct uet_pdc *pdc;
 
-	if (pdc_id >= UET_PDC_MAX) {
+	if ((pdc_id - 1) >= UET_PDC_MAX) {
 		UET_PDS_ERR("invalid PDC %u (range)", pdc_id);
 		return NULL;
 	}
 
-	pdc = &pds_state.pdc[pdc_id];
+	pdc = &pds_state.pdc[pdc_id - 1];
 
 	if (pdc->state == PDC_STATE_UNALLOC) {
 		UET_PDS_ERR("invalid PDC %u (unalloc)", pdc_id);
@@ -1665,7 +1665,7 @@ int uet_pds_initialize(struct uet_instance *uet)
 	for (i = 0; i < UET_PDC_MAX; i++) {
 		pdc = &pds_state.pdc[i];
 		pdc->state = PDC_STATE_UNALLOC;
-		pdc->pdc_id = i;
+		pdc->pdc_id = i + 1;
 
 		pdc->tx_bm = bm_create(UET_DEFAULT_MPR);
 		if (!pdc->tx_bm) {
