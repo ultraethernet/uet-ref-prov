@@ -1,0 +1,30 @@
+
+
+CC ?= gcc
+RANLIB ?= ranlib
+AR ?= ar
+CLANG ?= clang
+
+LIBFABRIC ?= ../../../libfabric
+
+CFLAGS=-Wall                              \
+       -Wno-unused-variable               \
+       -Wno-implicit-function-declaration \
+       -Wno-int-conversion                \
+       -Wno-address-of-packed-member
+
+INCS=-I$(LIBFABRIC) -I$(LIBFABRIC)/include -I. -I../driver/include
+LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric -lrt -ldl -lpthread
+
+
+%.o: %.c
+	$(CC) $(CFLAGS) $(INCS) -c -o $@ $<
+
+uet: uet.o uet_api.o
+	$(CC) $(STATIC) uet.o uet_api.o -o $@ $(LDFLAGS)
+
+
+all: uet
+
+clean:
+	rm -rf *.o uet
