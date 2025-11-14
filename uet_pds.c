@@ -31,8 +31,13 @@
 
 #define UET_PDC_MAX 64
 
-#define UET_RANDOM_PDC_CLOSE
-#define UET_RANDOM_PDC_CLOSE_THRESH 10 /* percent */
+/*
+ * These random thresholds can be overridden with the UET_PDC_CLOSE_THRESH
+ * and the UET_PKT_DROP_THRESH environment variables. The values are
+ * represented in hundredths of a percent (1=0.01%, 100=1%, etc).
+ */
+#define UET_PDC_CLOSE_THRESH 50
+#define UET_PKT_DROP_THRESH  50
 
 typedef enum {
 	PDC_STATE_UNALLOC,
@@ -152,6 +157,19 @@ struct uet_pds_state {
 };
 
 static struct uet_pds_state pds_state;
+
+static int pds_pdc_close_thresh = UET_PDC_CLOSE_THRESH;
+static int pds_pkt_drop_thresh = UET_PKT_DROP_THRESH;
+
+/*
+ * Test if a random event should occur based on a threshold. Threshold is in
+ * hundredths of a percent (0.01% granularity). Returns true if event should
+ * occur.
+ */
+static inline bool uet_pds_random_check(int thresh)
+{
+	return ((rand() % 10000) < thresh);
+}
 
 #define PDS_GO()                                          \
 	do {                                              \
@@ -338,6 +356,15 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 		if (tx_pkt)
 			uet_gettime(&pdc_pkt->tx_time);
 
+		/* randomly drop packets for testing retransmit logic */
+		if (pds_pkt_drop_thresh &&
+		    uet_pds_random_check(pds_pkt_drop_thresh)) {
+			UET_PDS_WARN("PDC %u PSN %u random drop %s packet!",
+				     pdc->pdc_id, pp->pds_psn,
+				     (tx_pkt) ? "Tx" : "ACK");
+			return 0;
+		}
+
 		/* TODO: IPv6 support */
 		return uet_nic_tx_pkt(UET_NIC(uet), *pkt, pp->ip, new_pkt_len);
 	}
@@ -396,6 +423,15 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 
 	if (tx_pkt)
 		uet_gettime(&pdc_pkt->tx_time);
+
+	/* randomly drop packets for testing retransmit logic */
+	if (pds_pkt_drop_thresh &&
+	    uet_pds_random_check(pds_pkt_drop_thresh)) {
+		UET_PDS_WARN("PDC %u PSN %u random drop %s packet!",
+			     pdc->pdc_id, pp->pds_psn,
+			     (tx_pkt) ? "Tx" : "ACK");
+		return 0;
+	}
 
 	/* TODO: IPv6 support */
 	return uet_nic_tx_pkt(UET_NIC(uet), new_pkt, pp->ip, new_pkt_len);
@@ -573,6 +609,13 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	HASH_FIND(pdc_ini_hh, pds_state.pdc_ini_ht, &pdc_key,
 		  sizeof(pdc_key), pdc);
 	if (pdc) {
+		/* if the PDC is in error state, don't use it */
+		if (pdc->state == PDC_STATE_ERROR) {
+			UET_PDS_DBG("initiator lookup found an errored PDC %u",
+				    pdc->pdc_id);
+			return NULL;
+		}
+
 		/* if the PDC is closing, don't use it for new messages */
 		if (pdc->close_requested) {
 			UET_PDS_DBG("initiator lookup found a closing PDC %u",
@@ -712,6 +755,11 @@ static struct uet_pdc *uet_pdsm_get_pdc(uint16_t pdc_id,
 
 	if (pdc->state == PDC_STATE_UNALLOC) {
 		UET_PDS_ERR("invalid PDC %u (unalloc)", pdc_id);
+		return NULL;
+	}
+
+	if (pdc->state == PDC_STATE_ERROR) {
+		UET_PDS_ERR("invalid PDC %u (error)", pdc_id);
 		return NULL;
 	}
 
@@ -971,7 +1019,18 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 		return -EAGAIN;
 	}
 
-	/* the previous active message has drained, send the close command */
+	/*
+	 * Check if all outstanding packets have been ACK'ed. The initiator
+	 * MUST wait for all PDS ACKs to arrive before sending a close
+	 * command on a PDC.
+	 */
+	if (!dlist_empty(&pdc->tx_pkt_list_head)) {
+		UET_PDS_DBG("PDC %u has un-ACK'ed packets (cannot close)",
+			    pdc->pdc_id);
+		return -EAGAIN;
+	}
+
+	/* all messages and packets have drained, send the close command */
 	rc = uet_pds_send_close_cmd(uet, pdc);
 	if (rc != 0) {
 		UET_PDS_ERR("PDC %u failed to send close command",
@@ -1003,8 +1062,20 @@ int uet_pds_initialize(struct uet_instance *uet)
 	struct uet_pdc *pdc;
 	int i;
 
-	/* seed random number generator for PDC close decisions */
+	/* seed random number generator for PDC close and packet drop */
 	srand(time(NULL));
+
+	/* configure random PDC close threshold */
+	if (getenv("UET_PDC_CLOSE_THRESH")) {
+		pds_pdc_close_thresh =
+			strtoul(getenv("UET_PDC_CLOSE_THRESH"), NULL, 10);
+	}
+
+	/* configure random packet drop threshold */
+	if (getenv("UET_PKT_DROP_THRESH")) {
+		pds_pkt_drop_thresh =
+			strtoul(getenv("UET_PKT_DROP_THRESH"), NULL, 10);
+	}
 
 	uet->pds.tx_timeout     = UET_DEFAULT_TX_TIMEOUT;
 	uet->pds.max_tx_retries = UET_DEFAULT_MAX_TX_RETRIES;
@@ -1265,15 +1336,14 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			if (rc != 0)
 				return rc;
 
-#ifdef UET_RANDOM_PDC_CLOSE
-			if (pdc->is_initiator && !pdc->close_requested &&
-			    ((rand() % 100) < UET_RANDOM_PDC_CLOSE_THRESH)) {
-				/* randomly mark PDC for close */
-				UET_PDS_DBG("PDC %u randomly marked for close!",
-					    pdc->pdc_id);
+			/* randomly mark the PDC for close */
+			if (pds_pdc_close_thresh &&
+			    pdc->is_initiator && !pdc->close_requested &&
+			    uet_pds_random_check(pds_pdc_close_thresh)) {
+				UET_PDS_WARN("PDC %u random marked for close!",
+					     pdc->pdc_id);
 				pdc->close_requested = true;
 			}
-#endif /* UET_RANDOM_PDC_CLOSE */
 		}
 	}
 
@@ -1513,7 +1583,7 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 	 *         [x] increment the retry count
 	 *         [x] if the retry count has exceeeded the max
 	 *             [x] set the error handle to the tx_handle
-	 *             [ ] change PDC state(?)
+	 *             [x] change PDC state to ERROR
 	 *         [x] update the tx time
 	 *         [x] move the packet to the end of the tx_pkt_list
 	 *         [x] retransmit the pkt
@@ -1528,9 +1598,34 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 			if (rc == 0) {
 				break; /* no retransmit, done with this PDC */
 			} else if (rc == -EIO) {
-				/* TODO: Need to destroy this PDC... */
+				/*
+				 * Max retries exceeded - transition PDC to
+				 * error state and notify upper layer.
+				 */
+				UET_PDS_ERR("PDC %u transitioning to ERROR "
+					    "state (max retries exceeded)",
+					    pdc->pdc_id);
+				pdc->state = PDC_STATE_ERROR;
+
+				/* notify upper layer of failed packet */
+				if (err_pkt_handle)
+					*err_pkt_handle = pdc_pkt->tx_pkt_handle;
+
 				dlist_remove(&pdc_pkt->node);
-				break; /* done with this PDC */
+
+				/* free the packet buffers and structure */
+				if (pdc_pkt->ack_buf)
+					free(pdc_pkt->ack_buf);
+				if (pdc_pkt->pkt_buf)
+					free(pdc_pkt->pkt_buf);
+				free(pdc_pkt);
+
+				/*
+				 * Return immediately to give SES layer a
+				 * chance to handle this error before checking
+				 * other PDCs.
+				 */
+				return -EPROTO;
 			} else if (rc == -EAGAIN) {
 				/*
 				 * This packet was retransmitted, move this

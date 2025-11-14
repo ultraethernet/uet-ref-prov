@@ -69,7 +69,7 @@
 #define UET_PDS_CLR UET_CLR_MAGENTA
 #define UET_TSS_CLR UET_CLR_GREEN
 
-#define UET_WARN_CLR UET_CLR_RED
+#define UET_WARN_CLR UET_CLR_YELLOW
 #define UET_ERR_CLR  UET_CLR_RED
 
 #define UET_LOG(fmt, clr, ...)          \

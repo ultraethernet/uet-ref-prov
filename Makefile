@@ -18,22 +18,30 @@ LDFLAGS=
 
 HDRS=$(wildcard *.h util/*.h nic_shim/*.h crypto/*.h)
 
-# Shared library
-LIBNAME=uet
-LIB=lib$(LIBNAME).so
+# Shared library sources (common for both variants)
 LIB_SRC=$(filter-out uet.c, \
 	$(filter-out $(wildcard nic_shim/*xdp*), \
 		     $(wildcard *.c \
 				util/*.c \
 				nic_shim/*.c \
 				crypto/*.c)))
-LIB_OBJ_DIR=obj_lib
-LIB_OBJ=$(patsubst %.c, $(LIB_OBJ_DIR)/%.o, $(LIB_SRC))
+
+# Fabric shared library (ENABLE_VERBS=0)
+FABRIC_LIBNAME=uet_fabric
+FABRIC_LIB=lib$(FABRIC_LIBNAME).so
+FABRIC_LIB_OBJ_DIR=obj_libuet_fabric
+FABRIC_LIB_OBJ=$(patsubst %.c, $(FABRIC_LIB_OBJ_DIR)/%.o, $(LIB_SRC))
+
+# Verbs shared library (ENABLE_VERBS=1)
+VERBS_LIBNAME=uet_verbs
+VERBS_LIB=lib$(VERBS_LIBNAME).so
+VERBS_LIB_OBJ_DIR=obj_libuet_verbs
+VERBS_LIB_OBJ=$(patsubst %.c, $(VERBS_LIB_OBJ_DIR)/%.o, $(LIB_SRC))
 
 # Main executable
 BIN=uet
 MAIN_SRC=uet.c
-OBJ_DIR=obj
+OBJ_DIR=obj_uet
 MAIN_OBJ=$(OBJ_DIR)/uet.o
 
 # XDP shared library
@@ -64,12 +72,8 @@ CC_SIM_SRC=$(wildcard cc/*.c cc_sim/*.c)
 CC_SIM_OBJ_DIR=obj_cc_sim
 CC_SIM_OBJ=$(patsubst %.c, $(CC_SIM_OBJ_DIR)/%.o, $(CC_SIM_SRC))
 
-# Default target
-all: $(BIN)
-
-# Verbs target
-verbs: CFLAGS+=-DENABLE_VERBS=1
-verbs: $(BIN)
+# Default target - build both shared libraries and the executable
+all: $(FABRIC_LIB) $(VERBS_LIB) $(BIN)
 
 # XDP target
 xdp: $(XDP_BIN) $(XDP_KERN_BIN)
@@ -77,16 +81,27 @@ xdp: $(XDP_BIN) $(XDP_KERN_BIN)
 # CC sim target
 cc_sim: $(CC_SIM_BIN)
 
-# Shared library object files (compiled with -fPIC)
-$(LIB_OBJ_DIR)/%.o: %.c $(HDRS)
-	@mkdir -p $(LIB_OBJ_DIR)/$(dir $<)
-	@echo 'Building library object: $<'
-	@$(CC) $(CFLAGS) $(INCS) $(LF_LOCAL_HDRS) -fPIC -c -o $@ $<
+# Fabric library object files (compiled with -fPIC, ENABLE_VERBS=0)
+$(FABRIC_LIB_OBJ_DIR)/%.o: %.c $(HDRS)
+	@mkdir -p $(FABRIC_LIB_OBJ_DIR)/$(dir $<)
+	@echo 'Building fabric library object: $<'
+	@$(CC) $(CFLAGS) -DENABLE_VERBS=0 $(INCS) $(LF_LOCAL_HDRS) -fPIC -c -o $@ $<
 
-# Shared library
-$(LIB): $(LIB_OBJ)
-	@echo 'Building shared library: $@'
-	@$(CC) -shared $(LIB_OBJ) -o $@ $(LDFLAGS)
+# Fabric shared library
+$(FABRIC_LIB): $(FABRIC_LIB_OBJ)
+	@echo 'Building fabric shared library: $@'
+	@$(CC) -shared $(FABRIC_LIB_OBJ) -o $@ $(LDFLAGS)
+
+# Verbs library object files (compiled with -fPIC, ENABLE_VERBS=1)
+$(VERBS_LIB_OBJ_DIR)/%.o: %.c $(HDRS)
+	@mkdir -p $(VERBS_LIB_OBJ_DIR)/$(dir $<)
+	@echo 'Building verbs library object: $<'
+	@$(CC) $(CFLAGS) -DENABLE_VERBS=1 $(INCS) $(LF_LOCAL_HDRS) -fPIC -c -o $@ $<
+
+# Verbs shared library
+$(VERBS_LIB): $(VERBS_LIB_OBJ)
+	@echo 'Building verbs shared library: $@'
+	@$(CC) -shared $(VERBS_LIB_OBJ) -o $@ $(LDFLAGS)
 
 # XDP shared library object files (compiled with -fPIC) (w/ extra CFLAGS)
 $(XDP_LIB_OBJ_DIR)/%.o: %.c $(HDRS)
@@ -105,10 +120,10 @@ $(OBJ_DIR)/%.o: %.c $(HDRS)
 	@echo 'Building file: $<'
 	@$(CC) $(CFLAGS) $(INCS) $(LF_HDRS) -c -o $@ $<
 
-# Main executable (links against shared library)
-$(BIN): $(LIB) $(MAIN_OBJ)
+# Main executable (links against fabric shared library)
+$(BIN): $(FABRIC_LIB) $(MAIN_OBJ)
 	@echo 'Building program: $@'
-	@$(CC) $(MAIN_OBJ) -o $@ -L. -l$(LIBNAME) $(LDFLAGS) $(LF_LIBS)
+	@$(CC) $(MAIN_OBJ) -o $@ -L. -l$(FABRIC_LIBNAME) $(LDFLAGS) $(LF_LIBS)
 
 # XDP executable object file (w/ extra CFLAGS)
 $(XDP_OBJ_DIR)/%.o: %.c $(HDRS)
@@ -137,7 +152,8 @@ $(CC_SIM_BIN): $(CC_SIM_OBJ)
 	@$(CC) $(CC_SIM_OBJ) -o $@ $(LDFLAGS)
 
 clean:
-	@rm -rf $(LIB_OBJ_DIR) $(LIB) \
+	@rm -rf $(FABRIC_LIB_OBJ_DIR) $(FABRIC_LIB) \
+		$(VERBS_LIB_OBJ_DIR) $(VERBS_LIB) \
 		$(OBJ_DIR) $(BIN) \
 		$(XDP_LIB_OBJ_DIR) $(XDP_LIB) \
 		$(XDP_OBJ_DIR) $(XDP_BIN) \
