@@ -2383,49 +2383,35 @@ int main(int argc, char *argv[])
 	}
 
 	if (do_all || (strcmp(test, "atomic") == 0)) {
-		char *pds = getenv(UET_PDS);
-		if ((pds == NULL) || (strcmp(pds, "sng") == 0)) {
-			printf("\nAtomic Test\n");
-			printf(  "===========\n");
-			test_argc = 4;
-			test_argv[0] = cmd;
-			test_argv[1] = c_s;
-			test_argv[2] = "atomic";
-			test_argv[3] = ip;
-			test_argv[4] = NULL;
-			memset(ctx, 0, sizeof(struct uet_context));
+		printf("\nAtomic Test\n");
+		printf(  "===========\n");
+		test_argc = 4;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = "atomic";
+		test_argv[3] = ip;
+		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
 
-			rc = uet_run(test_argc, test_argv, ctx);
-			if (rc != UET_SUCCESS_RC)
-				exit(rc);
-		} else
-			/* TODO: remove this restriction when pds mode	*/
-			/*       supports clear				*/
-			printf("\nAtomic test currently only supported in "
-			       "sng mode\n");
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
 	}
 
 	if (do_all || (strcmp(test, "sync_atomic") == 0)) {
-		char *pds = getenv(UET_PDS);
-		if ((pds == NULL) || (strcmp(pds, "sng") == 0)) {
-			printf("\nSync Group Atomic Test\n");
-			printf(  "======================\n");
-			test_argc = 4;
-			test_argv[0] = cmd;
-			test_argv[1] = c_s;
-			test_argv[2] = "sync_atomic";
-			test_argv[3] = ip;
-			test_argv[4] = NULL;
-			memset(ctx, 0, sizeof(struct uet_context));
+		printf("\nSync Group Atomic Test\n");
+		printf(  "======================\n");
+		test_argc = 4;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = "sync_atomic";
+		test_argv[3] = ip;
+		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
 
-			rc = uet_run(test_argc, test_argv, ctx);
-			if (rc != UET_SUCCESS_RC)
-				exit(rc);
-		} else
-			/* TODO: remove this restriction when pds mode	*/
-			/*       supports clear				*/
-			printf("\nSync Group Atomic test currently only "
-			       "supported in sng mode\n");
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
 	}
 
 	exit(0);

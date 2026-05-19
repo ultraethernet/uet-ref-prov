@@ -1533,6 +1533,15 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 	return FI_SUCCESS;
 }
 
+static bool uet_tx_desc_expects_amo_rsp_data(struct uet_tx_desc *tx_desc)
+{
+	if (tx_desc->desc_flags & (UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ |
+				   UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ)) {
+		return true;
+	}
+	return false;
+}
+
 /* tx descriptor state transition */
 static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 {
@@ -1558,7 +1567,10 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 				pds->downcall.msg_cmpl_ind(
 					uet_ep, tx_desc->dst_addr_handle,
 					tx_desc->pds_mode, tx_desc->msg_id);
-			}
+			} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc))
+				pds->downcall.msg_cmpl_ind(
+					uet_ep, tx_desc->dst_addr_handle,
+					tx_desc->pds_mode, tx_desc->msg_id);
 			tx_desc->state = UET_TX_DESC_STATE_COMPLETE;
 		}
 		break;
@@ -1570,7 +1582,10 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 				pds->downcall.msg_cmpl_ind(
 					uet_ep, tx_desc->dst_addr_handle,
 					tx_desc->pds_mode, tx_desc->msg_id);
-			}
+			} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc))
+				pds->downcall.msg_cmpl_ind(
+					uet_ep, tx_desc->dst_addr_handle,
+					tx_desc->pds_mode, tx_desc->msg_id);
 			tx_desc->state = UET_TX_DESC_STATE_COMPLETE;
 		}
 		break;
@@ -1583,7 +1598,10 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 			pds->downcall.msg_cmpl_ind(
 				uet_ep, tx_desc->dst_addr_handle,
 				tx_desc->pds_mode, tx_desc->msg_id);
-		}
+		} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc))
+			pds->downcall.msg_cmpl_ind(
+				uet_ep, tx_desc->dst_addr_handle,
+				tx_desc->pds_mode, tx_desc->msg_id);
 		rc = uet_retx_msg(tx_desc, tx_desc->delay_retx);
 		if (rc == FI_SUCCESS)
 			tx_desc->state = UET_TX_DESC_STATE_ACTIVE;
@@ -1614,7 +1632,10 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 			pds->downcall.msg_cmpl_ind(
 				uet_ep, tx_desc->dst_addr_handle,
 				tx_desc->pds_mode, tx_desc->msg_id);
-		}
+		} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc))
+			pds->downcall.msg_cmpl_ind(
+				uet_ep, tx_desc->dst_addr_handle,
+				tx_desc->pds_mode, tx_desc->msg_id);
 		tx_desc->state = UET_TX_DESC_STATE_ERR_COMPLETE;
 		break;
 	default:
@@ -4523,6 +4544,11 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 
 			if (tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ)
 				ses_len += sizeof(struct uet_ses_sync_ext);
+		}
+
+		if (uet_tx_desc_expects_amo_rsp_data(tx_desc)) {
+			if (flags & UET_PDS_FLAG_SOM)
+				flags |= UET_PDS_FLAG_MAINTAIN_PDC;
 		}
 
 		if (tx_desc->buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
