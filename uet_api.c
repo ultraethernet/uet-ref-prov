@@ -2170,6 +2170,17 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
 		}
 	}
 
+	/* Enforce RI-restricted access as a region bound to a resource index
+	 * may only be reached through the endpoint carrying that RI (the
+	 * request's target RI, used to resolve uet_ep).
+	 */
+	if (mr_desc && mr_desc->ri_restricted) {
+		if (mr_desc->resource_index != uet_ep->uet_addr.start_index) {
+			UET_API_ERR("MR access denied: Resource Index mismatch");
+			mr_desc = NULL;
+		}
+	}
+
 	return mr_desc;
 }
 
@@ -6787,6 +6798,37 @@ int uet_mr_reg_job(uet_domain_handle_t domain_handle, const void *buf,
 
 		mr_desc->job_id = job_id;
 		mr_desc->job_restricted = true;
+	}
+
+	return rc;
+}
+
+/*
+ * Register a memory region restricted to a specific Resource Index, and
+ * optionally to a JobID as well. Only incoming requests whose target RI (the
+ * endpoint they resolve to) matches may access the region. When job_id is not
+ * UET_JOB_ID_ANY the region is additionally restricted to that job. This
+ * models the {PIDonFEP, RI[, JobID]} region scope.
+ */
+int uet_mr_reg_ri(uet_domain_handle_t domain_handle, const void *buf,
+		  size_t len, uint64_t access, uint64_t requested_key,
+		  uint64_t flags, uint32_t job_id, uint16_t resource_index,
+		  void *context, uet_mr_handle_t *mr_handle)
+{
+	int rc;
+
+	rc = uet_mr_reg(domain_handle, buf, len, access, requested_key,
+			flags, context, mr_handle);
+	if (rc == FI_SUCCESS) {
+		struct uet_mr_desc *mr_desc = (struct uet_mr_desc *) *mr_handle;
+
+		mr_desc->resource_index = resource_index;
+		mr_desc->ri_restricted = true;
+
+		if (job_id != UET_JOB_ID_ANY) {
+			mr_desc->job_id = job_id;
+			mr_desc->job_restricted = true;
+		}
 	}
 
 	return rc;

@@ -341,6 +341,31 @@ int uet_mr_reg_job(uet_domain_handle_t domain_handle, const void *buf,
 		   uet_mr_handle_t *mr_handle);
 
 /*
+ * register a memory region restricted to a specific Resource Index, and
+ * optionally to a JobID as well.
+ *
+ * parms:
+ *   domain_handle - handle identifying uet domain instance
+ *   buf           - start of the region
+ *   len           - length of the region
+ *   access        - operations supported for the region
+ *   requested_key - requested key (UET_MR_KEY_NONE for provider key)
+ *   flags         - registration flags
+ *   job_id        - JobID to also restrict to, or UET_JOB_ID_ANY for RI-only
+ *   resource_index - Resource Index the region is restricted to
+ *   context       - user specified context associated with the region
+ *   mr_handle     - ptr to location where the region handle is returned
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ */
+int uet_mr_reg_ri(uet_domain_handle_t domain_handle, const void *buf,
+		  size_t len, uint64_t access, uint64_t requested_key,
+		  uint64_t flags, uint32_t job_id, uint16_t resource_index,
+		  void *context, uet_mr_handle_t *mr_handle);
+
+/*
  * get memory region protection key
  *
  * parms:

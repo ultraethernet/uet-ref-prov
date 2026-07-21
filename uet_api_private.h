@@ -177,6 +177,8 @@ struct uet_mr_desc {
 	uint64_t flags;                        /* properties of memory region */
 	uint32_t job_id;                 /* JobID the region is restricted to */
 	bool job_restricted;               /* region is restricted to a JobID */
+	uint16_t resource_index;            /* RI the region is restricted to */
+	bool ri_restricted;       /* region is restricted to a resource index */
 	bool user_key;            /* key is user-assigned (hash space) vs the */
 				  /* provider-assigned index space            */
 	void *context;                                      /* for completion */
