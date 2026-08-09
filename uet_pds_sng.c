@@ -241,7 +241,7 @@ static struct uet_ep *uet_pds_find_dst_ep(
 static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, void *pkt,
 			       struct uet_pds_ack_state **dup_ack_state)
 {
-	struct dlist_entry *head, *item, *prev_item;
+	struct dlist_entry *head, *item, *tmp;
 	struct uet_pds_ack_state *ack_state;
 	struct uet_pds_hdr_overlay *ack_overlay, *pkt_overlay;
 	time_t now;
@@ -270,7 +270,7 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, void *pkt,
 	uet_gettime(&now);
 
 	head = &pds_state->ack_state_list_head;
-	dlist_foreach(head, item) {
+	dlist_foreach_safe(head, item, tmp) {
 		uint32_t *ack_psn, *pkt_psn;
 		bool ip_match;
 
@@ -323,9 +323,7 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, void *pkt,
 		    uet_ep->uet_domain->uet->pds.msl) {
 			dlist_remove(item);
 			free(ack_state);
-			item = prev_item;
 		}
-		prev_item = item;
 	}
 
 	return false;
@@ -1112,4 +1110,3 @@ void uet_pds_sng_ep_close_wait(struct uet_ep *uet_ep)
 		uet->pds.downcall.progress_rx(uet);
 	}
 }
-
