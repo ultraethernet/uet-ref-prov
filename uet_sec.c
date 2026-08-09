@@ -83,7 +83,7 @@ int uet_sec_build_hdr(uint32_t sdi,
 
 		*new_pkt     = (pkt - sizeof(struct uet_sec_ssi));
 		*new_pkt_len = (pkt_len + sizeof(struct uet_sec_ssi));
-		memcpy(*new_pkt, pkt, copy_len);
+		memmove(*new_pkt, pkt, copy_len);
 	} else {
 		if ((pkt - sizeof(struct uet_sec)) < pkt_buf) {
 			UET_TSS_ERR("no headroom for uet_sec header\n");
@@ -92,7 +92,7 @@ int uet_sec_build_hdr(uint32_t sdi,
 
 		*new_pkt     = (pkt - sizeof(struct uet_sec));
 		*new_pkt_len = (pkt_len + sizeof(struct uet_sec));
-		memcpy(*new_pkt, pkt, copy_len);
+		memmove(*new_pkt, pkt, copy_len);
 	}
 
 	sec = (struct uet_sec *)(*new_pkt + copy_len);
@@ -755,4 +755,3 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 
 	return 0;
 }
-
