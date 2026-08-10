@@ -2027,6 +2027,7 @@ static void uet_finalize_core(struct uet_instance *uet)
 	imp_shim_finalize();
 	uet_nic_finalize(UET_NIC(uet));
 	uet_domain_free_all(uet);
+	uet->pds.downcall.finalize(uet);
 }
 
 /* init rx descriptor used to track errored msg */
@@ -5688,7 +5689,7 @@ int uet_initialize(uet_handle_t *handle)
 	UET_NIC(uet)->uet_ipproto = uet->uet_ipproto;
 	rc = uet_nic_initialize(UET_NIC(uet));
 	if (rc != FI_SUCCESS)
-		goto err_return;
+		goto err_pds;
 
 	rc = imp_shim_init(UET_NIC(uet));
 	if (rc != 0)
@@ -5708,6 +5709,9 @@ err_sec:
 
 err_imp_shim:
 	uet_nic_finalize(UET_NIC(uet));
+
+err_pds:
+	uet->pds.downcall.finalize(uet);
 
 err_return:
 	if (uet != NULL)
@@ -5989,12 +5993,8 @@ err_exit:
 int uet_domain_close(uet_domain_handle_t domain_handle)
 {
 	struct uet_domain *uet_dom;
-	struct uet_pds *pds;
 
 	uet_dom = (struct uet_domain *) domain_handle;
-	pds = &uet_dom->uet->pds;
-
-	pds->downcall.finalize(uet_dom->uet);
 
 	if (uet_domain_has_ep(uet_dom)) {
 		UET_API_ERR("EPs associated with domain being closed");

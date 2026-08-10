@@ -66,6 +66,16 @@ jobs:
         run: |
           make
 
+      - name: Check PDS instance lifecycle
+        run: |
+          make pds-lifecycle-test
+          for pds in pds sng; do
+            sudo env \
+              LD_LIBRARY_PATH="$PWD:$PWD/../libfabric/src/.libs" \
+              UET_PDS="$pds" \
+              ./obj_tests/test_pds_lifecycle brm
+          done
+
       - name: Check network brm to vm
         run: |
           ping -c1 10.1.0.2
@@ -126,4 +136,3 @@ jobs:
               echo "::endgroup::"
             done
           done
-

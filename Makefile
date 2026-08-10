@@ -90,6 +90,9 @@ XDP_MAIN_OBJ=$(XDP_OBJ_DIR)/uet.o
 XDP_KERN_SRC=$(wildcard nic_shim/*xdp_kern*)
 XDP_KERN_BIN=uet_xdp_kern.o
 
+TEST_OBJ_DIR=obj_tests
+PDS_LIFECYCLE_TEST_BIN=$(TEST_OBJ_DIR)/test_pds_lifecycle
+
 xdp: CFLAGS+=-DENABLE_XDP -DXDP_PROG=$(XDP_KERN_BIN)
 xdp: LDFLAGS+=-lbpf -lxdp
 
@@ -151,6 +154,14 @@ $(BIN): $(FABRIC_LIB) $(MAIN_OBJ)
 	@echo 'Building program: $@'
 	@$(CC) $(MAIN_OBJ) -o $@ -L. -l$(FABRIC_LIBNAME) $(LDFLAGS) $(LF_LIBS)
 
+$(PDS_LIFECYCLE_TEST_BIN): tests/test_pds_lifecycle.c $(FABRIC_LIB)
+	@mkdir -p $(TEST_OBJ_DIR)
+	@echo 'Building PDS lifecycle test: $@'
+	@$(CC) $(CFLAGS) -DENABLE_VERBS=0 $(INCS) $(LF_HDRS) \
+		-o $@ $< -L. -l$(FABRIC_LIBNAME) $(LDFLAGS) $(LF_LIBS)
+
+pds-lifecycle-test: $(PDS_LIFECYCLE_TEST_BIN)
+
 # XDP executable object file (w/ extra CFLAGS)
 $(XDP_OBJ_DIR)/%.o: %.c $(HDRS)
 	@mkdir -p $(XDP_OBJ_DIR)/$(dir $<)
@@ -184,7 +195,7 @@ clean:
 		$(XDP_LIB_OBJ_DIR) $(XDP_LIB) \
 		$(XDP_OBJ_DIR) $(XDP_BIN) \
 		$(XDP_KERN_BIN) \
+		$(TEST_OBJ_DIR) \
 		$(CC_SIM_OBJ_DIR) $(CC_SIM_BIN)
 
-.PHONY: all xdp cc_sim clean
-
+.PHONY: all xdp pds-lifecycle-test cc_sim clean
