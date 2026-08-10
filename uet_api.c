@@ -3647,6 +3647,15 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 
 	ses_std_req = (struct uet_ses_req_std *) pp->ses;
 	rx_ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
+	ses_rsp = (struct uet_ses_rsp *) rsp_ses_hdr;
+	ses_rsp_d = (struct uet_ses_rsp_d *) rsp_ses_hdr;
+
+	list = UET_EXPECTED;
+	*ses_nack = false;
+	ep_gen = 0;
+
+	ses_rsp->cmn.msg_id = ses_std_req->cmn.msg_id;
+	ses_rsp->cmn.ri_gen_job_id = ses_std_req->cmn.ri_gen_job_id;
 
 	ver = (ses_std_req->cmn.ver_flags & UET_SES_VER_MASK) >>
 		UET_SES_VER_SHIFT;
@@ -3657,16 +3666,6 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		ses_rc = UET_RC_UNCOR;
 		goto build_response;
 	}
-
-	ses_rsp = (struct uet_ses_rsp *) rsp_ses_hdr;
-	ses_rsp_d = (struct uet_ses_rsp_d *) rsp_ses_hdr;
-
-	list = UET_EXPECTED;
-	*ses_nack = false;
-	ep_gen = 0;
-
-	ses_rsp->cmn.msg_id = ses_std_req->cmn.msg_id;
-	ses_rsp->cmn.ri_gen_job_id = ses_std_req->cmn.ri_gen_job_id;
 
 	switch (pp->next_hdr) {
 	case UET_HDR_REQ_STD:
