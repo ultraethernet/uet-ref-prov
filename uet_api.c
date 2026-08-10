@@ -3457,7 +3457,7 @@ err_exit:
 
 /* process received ready to restart request */
 static uet_ses_rc_t uet_rx_rtr_req_pkt(
-	    struct uet_instance *uet, struct uet_parsed_pkt *pp,
+	    struct uet_instance *uet, struct uet_parsed_pkt *pp, uint32_t job_id,
 	    struct uet_ep **uet_ep)
 {
 	uint32_t local_token, token_initiator_id, req_initiator_id;
@@ -3488,6 +3488,16 @@ static uet_ses_rc_t uet_rx_rtr_req_pkt(
 	token_uet_ep = uet_get_rtr_token_ep(uet, (uint16_t) local_token);
 	if (tx_desc->uet_ep != token_uet_ep)
 		return UET_RC_OP_VIOLATION;
+
+	/*
+	 * Validate all request identity before consuming the restart token.
+	 * In particular, a request for another relative endpoint's JobID must
+	 * not remove the descriptor from its deferred list or mark it ready.
+	 */
+	if (!token_uet_ep->absolute && token_uet_ep->job_id != job_id) {
+		UET_API_ERR("RX: Bad Job ID on Restart Token");
+		return UET_RC_BAD_JOB_ID;
+	}
 
 	tx_desc->remote_rtr_token =
 		(full_token & UET_SES_REQ_STD_SRC_TOKEN_MASK) >>
@@ -3680,8 +3690,11 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 				ses_rc = UET_RC_UNDELIVERABLE;
 				goto build_response;
 			}
-		} else
-			ses_rc = uet_rx_rtr_req_pkt(uet, pp, &uet_ep);
+		} else {
+			ses_rc = uet_rx_rtr_req_pkt(uet, pp, job_id, &uet_ep);
+			if (ses_rc != UET_RC_OK)
+				goto build_response;
+		}
 		/* Absolute endpoints receive from any JobID. Authorization
 		 * is enforced per-MR (job-restricted regions). Relative
 		 * endpoints demux/authorize by the endpoint JobID.
