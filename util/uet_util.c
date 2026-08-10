@@ -1115,7 +1115,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 				return rc;
 			if (ntohs(udp->dest) != uet->uet_udp_port)
 				goto err_exit;
-			pp->entropy = ntohs(udp->source);
+			pp->entropy_val = ntohs(udp->source);
 			pp->udp = p;
 			pp->udp_len = sizeof(struct udphdr);
 			cur_len += pp->udp_len;
@@ -1404,4 +1404,3 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 err_exit:
 	return -EINVAL;
 }
-

@@ -2719,7 +2719,7 @@ static uet_ses_rc_t uet_rx_atomic_req_pkt(
 	if (sync_defer_atomic) {
 		entry->atomic_parms.opcode = UET_AMO_SUM;
 		entry->atomic_parms.data_type = UET_TYPE_UINT64;
-		entry->atomic_parms.addr = (uint64_t) addr;
+		entry->atomic_parms.addr = addr;
 		entry->atomic_parms.data = data;
 	} else
 		__atomic_fetch_add(addr, data, __ATOMIC_SEQ_CST);

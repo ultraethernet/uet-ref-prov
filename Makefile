@@ -63,6 +63,17 @@ VERBS_LIB=lib$(VERBS_LIBNAME).so
 VERBS_LIB_OBJ_DIR=obj_libuet_verbs
 VERBS_LIB_OBJ=$(patsubst %.c, $(VERBS_LIB_OBJ_DIR)/%.o, $(LIB_SRC))
 
+# Compile-only objects used to enforce diagnostics on project sources without
+# inheriting compatibility suppressions needed by the standalone application.
+STRICT_CFLAGS=$(filter-out -Wno-implicit-function-declaration \
+	-Wno-int-conversion,$(CFLAGS)) \
+	-Werror=implicit-function-declaration \
+	-Werror=int-conversion
+STRICT_FABRIC_OBJ_DIR=obj_strict_libuet_fabric
+STRICT_FABRIC_OBJ=$(patsubst %.c, $(STRICT_FABRIC_OBJ_DIR)/%.o, $(LIB_SRC))
+STRICT_VERBS_OBJ_DIR=obj_strict_libuet_verbs
+STRICT_VERBS_OBJ=$(patsubst %.c, $(STRICT_VERBS_OBJ_DIR)/%.o, $(LIB_SRC))
+
 # Main executable
 BIN=uet
 MAIN_SRC=uet.c
@@ -104,6 +115,10 @@ all: $(FABRIC_LIB) $(VERBS_LIB) $(BIN)
 # XDP target
 xdp: $(XDP_BIN) $(XDP_KERN_BIN)
 
+# Check project sources with diagnostics that are suppressed for some external
+# libfabric headers used by the standalone application.
+strict-core: $(STRICT_FABRIC_OBJ) $(STRICT_VERBS_OBJ)
+
 # CC sim target
 cc_sim: $(CC_SIM_BIN)
 
@@ -128,6 +143,18 @@ $(VERBS_LIB_OBJ_DIR)/%.o: %.c $(HDRS)
 $(VERBS_LIB): $(VERBS_LIB_OBJ)
 	@echo 'Building verbs shared library: $@'
 	@$(CC) -shared $(VERBS_LIB_OBJ) -o $@ $(LDFLAGS)
+
+$(STRICT_FABRIC_OBJ_DIR)/%.o: %.c $(HDRS)
+	@mkdir -p $(STRICT_FABRIC_OBJ_DIR)/$(dir $<)
+	@echo 'Strict-checking fabric library object: $<'
+	@$(CC) $(STRICT_CFLAGS) -DENABLE_VERBS=0 $(INCS) $(LF_LOCAL_HDRS) \
+		-fPIC -c -o $@ $<
+
+$(STRICT_VERBS_OBJ_DIR)/%.o: %.c $(HDRS)
+	@mkdir -p $(STRICT_VERBS_OBJ_DIR)/$(dir $<)
+	@echo 'Strict-checking verbs library object: $<'
+	@$(CC) $(STRICT_CFLAGS) -DENABLE_VERBS=1 $(INCS) $(LF_LOCAL_HDRS) \
+		-fPIC -c -o $@ $<
 
 # XDP shared library object files (compiled with -fPIC) (w/ extra CFLAGS)
 $(XDP_LIB_OBJ_DIR)/%.o: %.c $(HDRS)
@@ -180,11 +207,11 @@ $(CC_SIM_BIN): $(CC_SIM_OBJ)
 clean:
 	@rm -rf $(FABRIC_LIB_OBJ_DIR) $(FABRIC_LIB) \
 		$(VERBS_LIB_OBJ_DIR) $(VERBS_LIB) \
+		$(STRICT_FABRIC_OBJ_DIR) $(STRICT_VERBS_OBJ_DIR) \
 		$(OBJ_DIR) $(BIN) \
 		$(XDP_LIB_OBJ_DIR) $(XDP_LIB) \
 		$(XDP_OBJ_DIR) $(XDP_BIN) \
 		$(XDP_KERN_BIN) \
 		$(CC_SIM_OBJ_DIR) $(CC_SIM_BIN)
 
-.PHONY: all xdp cc_sim clean
-
+.PHONY: all xdp strict-core cc_sim clean
