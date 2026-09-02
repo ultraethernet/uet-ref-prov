@@ -23,6 +23,11 @@
 /* environment variables to control the NIC interface */
 #define UET_NIC_SHIM  "UET_NIC_SHIM"
 #define UET_IFNAME    "UET_IFNAME"
+#define UET_VPP_SEGMENT     "UET_VPP_SEGMENT"
+#define UET_VPP_DMA_SOCKET  "UET_VPP_DMA_SOCKET"
+#define UET_VPP_IPV4_ADDR   "UET_VPP_IPV4_ADDR"
+#define UET_VPP_IPV6_ADDR   "UET_VPP_IPV6_ADDR"
+#define UET_VPP_MTU         "UET_VPP_MTU"
 
 #define UET_MAX_SYS_CMD_OCTETS  256
 #define UET_NET_TYPE_SIZE 32
@@ -31,6 +36,8 @@
 
 struct uet_mr_buf_desc;
 struct uet_instance;
+struct uet_ep;
+struct fi_info;
 
 enum uet_nic_link_state {
 	UET_NIC_LINK_STATE_UNKNOWN = 0,
@@ -83,6 +90,16 @@ struct uet_nic {
 	/* function pointers supporting different NIC interfaces */
 	int (*nic_getinfo)(struct uet_nic *nic,
 			   struct uet_nic_info *nic_info);
+	int (*nic_configure_info)(struct uet_nic *nic,
+				  struct fi_info *info);
+	int (*nic_ep_register)(struct uet_nic *nic,
+			       struct uet_ep *ep,
+			       void **context);
+	void (*nic_ep_unregister)(struct uet_nic *nic, void *context);
+	int (*nic_get_nh)(struct uet_nic *nic,
+			  const struct uet_fa *fa,
+			  bool is_ipv6,
+			  uint8_t *mac);
 	int (*nic_tx_pkt)(struct uet_nic *nic,
 			  void *pkt,
 			  void *iphdr,
@@ -211,6 +228,40 @@ static inline void uet_nic_finalize(struct uet_nic *nic)
 int uet_nic_getinfo(struct uet_nic *nic,
 		    struct uet_nic_info *nic_info);
 
+static inline int uet_nic_configure_info(struct uet_nic *nic,
+					 struct fi_info *info)
+{
+	if (!nic || !info)
+		assert(0);
+
+	if (!nic->nic_configure_info)
+		return 0;
+	return nic->nic_configure_info(nic, info);
+}
+
+static inline int uet_nic_ep_register(struct uet_nic *nic,
+				      struct uet_ep *ep,
+				      void **context)
+{
+	if (!nic || !ep || !context)
+		assert(0);
+
+	if (!nic->nic_ep_register)
+		return 0;
+	return nic->nic_ep_register(nic, ep, context);
+}
+
+static inline void uet_nic_ep_unregister(struct uet_nic *nic, void *context)
+{
+	if (!nic)
+		assert(0);
+	if (!context)
+		return;
+
+	if (nic->nic_ep_unregister)
+		nic->nic_ep_unregister(nic, context);
+}
+
 /*
  * get next-hop info for ipv4 destination address
  *
@@ -276,6 +327,8 @@ static inline int uet_nic_get_nh(struct uet_nic *nic,
 	if (!nic || !fa || !mac)
 		assert(0);
 
+	if (nic->nic_get_nh)
+		return nic->nic_get_nh(nic, fa, is_ipv6, mac);
 	if (is_ipv6)
 		return uet_nic_get_ipv6_nh(nic, fa->v6, mac);
 	else

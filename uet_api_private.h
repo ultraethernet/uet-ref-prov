@@ -628,6 +628,7 @@ struct uet_ep {
 		  /* head of list containing mr's with provider-assigned keys */
 	struct dlist_entry mr_list_head;
 	void *pds;                                               /* pds state */
+	void *nic_ep_context;                   /* optional NIC endpoint state */
 	uint32_t job_id;                                /* ses job identifier */
 	uint16_t entropy;             /* stable endpoint entropy value (EV) */
 	bool absolute;       /* endpoint uses absolute addressing (any JobID) */
