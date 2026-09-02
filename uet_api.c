@@ -904,6 +904,10 @@ static void uet_ep_key_init(struct uet_ep_key *key,
 		key->ip_addr.v4 = ntohl(ipv4->daddr);
 	}
 
+	key->absolute = !(ses->cmn.ver_flags & UET_SES_REQ_FLAG_REL);
+	if (!key->absolute)
+		key->job_id = uet_get_std_req_job_id(ses);
+
 	key->pid_on_fep =
 		(ntohs(ses->cmn.rsvd_pid_on_fep) & UET_SES_REQ_PID_ON_FEP_MASK)
 		>> UET_SES_REQ_PID_ON_FEP_SHIFT;
@@ -925,17 +929,61 @@ static uint16_t uet_ep_entropy_init(const struct uet_ep *uet_ep)
 	return entropy ? entropy : 1;
 }
 
-/* insert entry into ip endpoint hash table */
-static void uet_ep_hash_insert(struct uet_ep *uet_ep)
+static void uet_ep_key_init_local(struct uet_ep *uet_ep, uint16_t index)
+{
+	struct uet_ep_key *key = &uet_ep->ep_key;
+
+	memset(key, 0, sizeof(*key));
+	key->ipv6_addr = uet_addr_is_ipv6(&uet_ep->uet_addr);
+	key->absolute = uet_ep->absolute;
+	memcpy(&key->ip_addr, &uet_ep->ip_addr, sizeof(key->ip_addr));
+	if (!key->absolute)
+		key->job_id = uet_ep->job_id;
+	key->pid_on_fep = uet_ep->uet_addr.pid_on_fep;
+	key->index = index;
+}
+
+/*
+ * Insert an endpoint in the receive lookup table.  Software backends do not
+ * yet have an external address allocator, so allocate the first free resource
+ * index starting at the advertised index.  Explicit (verbs) addresses must be
+ * unique and are rejected rather than silently creating an ambiguous hash
+ * entry.
+ */
+static int uet_ep_hash_insert(struct uet_ep *uet_ep, bool allocate_index)
 {
 	struct uet_instance *uet;
+	struct uet_ep *existing;
+	uint32_t candidate, max_index;
 
 	uet = uet_ep->uet_domain->uet;
+	max_index = UET_SES_REQ_RES_INDEX_MASK >> UET_SES_REQ_RES_INDEX_SHIFT;
+	candidate = uet_ep->uet_addr.start_index;
 
 	uet_rw_lock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	for (; candidate <= max_index; candidate++) {
+		uet_ep_key_init_local(uet_ep, (uint16_t)candidate);
+		HASH_FIND(ep_hh, uet->ep_hash_table, &uet_ep->ep_key,
+			  sizeof(struct uet_ep_key), existing);
+		if (existing == NULL)
+			break;
+		if (!allocate_index) {
+			uet_rw_unlock(&uet->ep_lkup_lock,
+				       UET_RW_LOCK_WR_ACCESS);
+			return -FI_EADDRINUSE;
+		}
+	}
+	if (candidate > max_index) {
+		uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+		return -FI_ENOSPC;
+	}
+
+	uet_ep->uet_addr.start_index = (uint16_t)candidate;
 	HASH_ADD(ep_hh, uet->ep_hash_table, ep_key,
 		 sizeof(struct uet_ep_key), uet_ep);
 	uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+
+	return FI_SUCCESS;
 }
 
 /* remove entry from ip endpoint hash table */
@@ -6955,6 +7003,7 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 {
 	int rc;
 	size_t i;
+	bool data_lock_initialized = false;
 	struct uet_domain *uet_dom;
 	struct uet_ep *uet_ep;
 	struct uet_pds *pds;
@@ -6970,7 +7019,12 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		goto err_exit;
 	}
 
-	pthread_mutex_init(&uet_ep->data_lock, NULL);
+	rc = pthread_mutex_init(&uet_ep->data_lock, NULL);
+	if (rc != 0) {
+		rc = -FI_EOTHER;
+		goto err_exit;
+	}
+	data_lock_initialized = true;
 
 	/* init ep object */
 	memcpy(&uet_ep->uet_addr, info->src_addr, info->src_addrlen);
@@ -7004,6 +7058,16 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	}
 #endif
 	memcpy(&uet_ep->ip_addr, &uet_ep->uet_addr.fa, sizeof(struct uet_fa));
+	if (uet_ep->uet_addr.pid_on_fep >
+	    (UET_SES_REQ_PID_ON_FEP_MASK >> UET_SES_REQ_PID_ON_FEP_SHIFT) ||
+	    uet_ep->uet_addr.start_index >
+	    (UET_SES_REQ_RES_INDEX_MASK >> UET_SES_REQ_RES_INDEX_SHIFT) ||
+	    (!uet_ep->absolute &&
+	     uet_ep->job_id >
+	     (UET_SES_REQ_JOB_ID_MASK >> UET_SES_REQ_JOB_ID_SHIFT))) {
+		rc = -FI_EINVAL;
+		goto err_exit;
+	}
 
 	uet_ep->num_rx_desc = info->rx_attr->size;
 	uet_ep->rx_desc = calloc(uet_ep->num_rx_desc,
@@ -7065,13 +7129,16 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->send_cq.cq_state = UET_CQ_DOWN;
 	uet_ep->recv_cq.cq_state = UET_CQ_DOWN;
 
-	if (uet_ep->uet_addr.flags & UET_ADDR_IPV6)
-		uet_ep->ep_key.ipv6_addr = true;
-	memcpy(&uet_ep->ep_key.ip_addr, &uet_ep->ip_addr,
-	       sizeof(struct uet_fa));
-	uet_ep->ep_key.pid_on_fep = uet_ep->uet_addr.pid_on_fep;
-	uet_ep->ep_key.index = uet_ep->uet_addr.start_index;
-	uet_ep_hash_insert(uet_ep);
+	rc = uet_ep_hash_insert(uet_ep, !ENABLE_VERBS);
+	if (rc != FI_SUCCESS) {
+		if (rc == -FI_EADDRINUSE)
+			UET_API_ERR("endpoint address is already in use");
+		else if (rc == -FI_ENOSPC)
+			UET_API_ERR("no endpoint Resource Index is available");
+		else
+			UET_API_ERR("failed to allocate endpoint address");
+		goto err_exit;
+	}
 	uet_ep->entropy = uet_ep_entropy_init(uet_ep);
 
 	switch (info->tx_attr->tclass) {
@@ -7096,6 +7163,8 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 err_exit:
 	if (uet_ep) {
 		uet_desc_free(uet_ep);
+		if (data_lock_initialized)
+			pthread_mutex_destroy(&uet_ep->data_lock);
 		free(uet_ep);
 	}
 	return rc;
