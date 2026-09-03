@@ -1,13 +1,13 @@
 
 # UEC Reference Provider (libfabric)
 
-This repository provides a reference implementation of the UEC transport
-specifications including:
-- Semantic Sublayer (SES)
-- Packet Delivery Sublayer (PDS) - Reliability and Congestion Management
-- Transport Security Sublayer (TSS) - Encryption and Integrity
+The Ultra Ethernet Consortium (UEC) Reference Provider is an official reference implementation of the Ultra Ethernet Transport (UET) specifications, including the libfabric mapping and the following transport sublayers:
 
-See SDR4001 and the UEC Libfabric Mapping Specification for additional details.
+Semantic Sublayer (SES)
+Packet Delivery Sublayer (PDS), including reliability and congestion management
+Transport Security Sublayer (TSS), including encryption and integrity
+
+This repository is intended to support implementation, integration, interoperability testing, and continued development of UET technologies.
 
 ## Goals
 
