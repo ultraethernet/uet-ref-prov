@@ -52,6 +52,14 @@
 #define UET_DEFAULT_NEW_PDC_TIME_MS 1000
 
 /*
+ * Close_REQ_Time. When a target requests a PDC close by sending a Close Request
+ * CP, this timer bounds how long the target waits for the initiator to respond
+ * with a Close Command CP. If the initiator does not issue a Close Command CP
+ * within Close_REQ_Time, the target MUST close the PDC in error.
+ */
+#define UET_DEFAULT_CLOSE_REQ_TIME_MS 1000
+
+/*
  * PSN-range based close. An encrypted PDC MUST close once its PSN reaches
  * Start_PSN + 2^31 (and then re-establishes on the next send). This bounds
  * how far a single Start_PSN's anti-replay window travels. This is always
@@ -184,6 +192,7 @@ struct uet_pdc {
 	uint32_t            max_rcvd_psn; /* highest PSN received */
 	uint32_t            accepted_bytes; /* bytes received between ACKs */
 	uint32_t            sack_base_track; /* track SACK bitmap base PSN */
+	time_t              close_req_time; /* Close_REQ_Timer */
 
 	/* security fields, for Tx */
 	bool                sec_enabled;
@@ -209,6 +218,7 @@ struct uet_pds_state {
 	/* PDS statistics */
 	uint32_t              new_pdc_timeout_cnt; /* PENDING PDCs reaped */
 	uint32_t              psn_range_close_cnt; /* PDCs closed PSN range */
+	uint32_t              pdc_close_in_err_cnt; /* PDCs closed in error */
 };
 
 static struct uet_pds_state pds_state;
@@ -218,7 +228,8 @@ static int pds_pkt_drop_thresh = UET_PKT_DROP_THRESH;
 
 /* New_PDC_Time DoS timer, how long a half-open (PENDING) PDC is held */
 static int pds_new_pdc_time_ms = UET_DEFAULT_NEW_PDC_TIME_MS;
-
+/* Close_REQ_Time, how long target waits for the initiator's Close Command CP */
+static int pds_close_req_time_ms = UET_DEFAULT_CLOSE_REQ_TIME_MS;
 /* Secure PDC establishment method. Default is EXPECTED_0RTT_START. The
  * environment variable UET_PDS_PSN_METHOD=1rtt selects RANDOM_1RTT_START,
  * where the target ignores the initiator's Start_PSN, mints its own, and
@@ -301,9 +312,9 @@ static inline bool uet_pds_tx_psn_allowed(const struct uet_pdc *pdc,
 	 ((t) == UET_PDS_TYPE_NACK_CCX)   ? "NACK_CCX" :   \
 	 ((t) == UET_PDS_TYPE_RUD_CC_REQ) ? "RUD_CC_REQ" : \
 	 ((t) == UET_PDS_TYPE_ROD_CC_REQ) ? "ROD_CC_REQ" : \
-					   "UNKNOWN")
+					    "UNKNOWN")
 
-#define PDS_CTRL_TO_STR(n)                                        \
+#define PDS_CTRL_TYPE_TO_STR(n)                                   \
 	(((n) == UET_PDS_CTRL_TYPE_NOP)         ? "NOP" :         \
 	 ((n) == UET_PDS_CTRL_TYPE_ACK_REQ)     ? "ACK_REQ" :     \
 	 ((n) == UET_PDS_CTRL_TYPE_CLEAR)       ? "CLEAR" :       \
@@ -326,26 +337,26 @@ static inline bool uet_pds_tx_psn_allowed(const struct uet_pdc *pdc,
 	 ((n) == UET_HDR_RSP_DATA_SMALL) ? "RSP_DATA_SMALL" : \
 					   "UNKNOWN")
 
-#define PDS_DBG_TX(pp, msg)                                      \
-	UET_PDS_DBG("PDC %u [Tx %u] [PSN %u] [%s/%s] - %s (%d)", \
-		    (pp)->pds_spdcid, (pp)->pds_dpdcid,          \
-		    (pp)->pds_psn,                               \
-		    PDS_TYPE_TO_STR((pp)->pds_type),             \
-		    ((pp)->pds_type == UET_PDS_TYPE_CTRL)        \
-			? PDS_CTRL_TO_STR((pp)->pds_ctrl_type)   \
-			: NEXT_HDR_TO_STR((pp)->next_hdr),       \
-		    (msg),                                       \
+#define PDS_DBG_TX(pp, msg)                                          \
+	UET_PDS_DBG("PDC %u [Tx %u] [PSN %u] [%s/%s] - %s (%d)",     \
+		    (pp)->pds_spdcid, (pp)->pds_dpdcid,              \
+		    (pp)->pds_psn,                                   \
+		    PDS_TYPE_TO_STR((pp)->pds_type),                 \
+		    ((pp)->pds_type == UET_PDS_TYPE_CTRL)            \
+			? PDS_CTRL_TYPE_TO_STR((pp)->pds_ctrl_type)  \
+			: NEXT_HDR_TO_STR((pp)->next_hdr),           \
+		    (msg),                                           \
 		    (pp)->pkt_len)
 
-#define PDS_DBG_RX(pp, msg)                                      \
-	UET_PDS_DBG("PDC %u [Rx %u] [PSN %u] [%s/%s] - %s (%d)", \
-		    (pp)->pds_dpdcid, (pp)->pds_spdcid,          \
-		    (pp)->pds_psn,                               \
-		    PDS_TYPE_TO_STR((pp)->pds_type),             \
-		    ((pp)->pds_type == UET_PDS_TYPE_CTRL)        \
-			? PDS_CTRL_TO_STR((pp)->pds_ctrl_type)   \
-			: NEXT_HDR_TO_STR((pp)->next_hdr),       \
-		    (msg),                                       \
+#define PDS_DBG_RX(pp, msg)                                          \
+	UET_PDS_DBG("PDC %u [Rx %u] [PSN %u] [%s/%s] - %s (%d)",     \
+		    (pp)->pds_dpdcid, (pp)->pds_spdcid,              \
+		    (pp)->pds_psn,                                   \
+		    PDS_TYPE_TO_STR((pp)->pds_type),                 \
+		    ((pp)->pds_type == UET_PDS_TYPE_CTRL)            \
+			? PDS_CTRL_TYPE_TO_STR((pp)->pds_ctrl_type)  \
+			: NEXT_HDR_TO_STR((pp)->next_hdr),           \
+		    (msg),                                           \
 		    (pp)->pkt_len)
 
 static void uet_pds_pkt_dbg(struct uet_instance *uet,
@@ -384,6 +395,10 @@ char uet_pdc_rx_bit_char(void *data)
 	struct uet_pdc_pkt *pdc_pkt = (struct uet_pdc_pkt *)data;
 	return (pdc_pkt == NULL) ? '.' : '*';
 }
+
+/* forward decl: called by uet_pds_progress_tx_pkt() before its definition */
+static void uet_pds_close_pdc_in_error(struct uet_instance *uet,
+				       struct uet_pdc *pdc);
 
 /****************************************************************************/
 /*                       Security and NIC Shim APIs                         */
@@ -622,6 +637,7 @@ static void uet_init_pdc(struct uet_pdc *pdc,
 	pdc->close_requested = false;
 	pdc->close_started = false;
 	pdc->close_cmd_psn = 0;
+	pdc->close_req_time = 0;
 
 	pdc->pending_time = 0;
 
@@ -683,6 +699,7 @@ static void uet_pdsm_free_pdc(struct uet_pdc *pdc)
 	pdc->close_requested = false;
 	pdc->close_started = false;
 	pdc->close_cmd_psn = 0;
+	pdc->close_req_time = 0;
 
 	/* reset active message tracking */
 	pdc->active_msg_id = 0;
@@ -1150,25 +1167,29 @@ static int uet_pdsm_check_nack_code(struct uet_pdc_pkt *pdc_pkt)
 	return -ENOSYS;
 }
 #endif
-
 /****************************************************************************/
-/*                            PDC Initiator APIs                            */
+/*            PDC Initiator and Target Common APIs                          */
 /****************************************************************************/
 
-static int uet_pds_send_close_cmd(struct uet_instance *uet,
-				  struct uet_pdc *pdc)
+static int uet_pds_send_ctrl_pkt(struct uet_instance *uet,
+				 struct uet_pdc *pdc,
+				 uet_pds_ctrl_type_t ctrl_type,
+				 uint32_t payload,
+				 void *private_data)
 {
-	struct uet_pdc_pkt *pdc_pkt;
+	struct uet_pdc_pkt *pdc_pkt, *orig_pdc_pkt;
 	struct uet_pds_ctrl *ctrl_hdr;
 	struct uet_entropy *entropy_hdr;
 	size_t ip_hdr_size;
+	uint32_t cp_psn;
 	uint16_t ctrl_flags;
+	bool need_track = true;
 	int rc, tx_bm_idx;
 
 	/* allocate the packet descriptor */
 	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
 	if (pdc_pkt == NULL) {
-		UET_PDS_ERR("failed to alloc PDC packet for close command");
+		UET_PDS_ERR("failed to alloc PDC packet for ctrl packet");
 		return -ENOMEM;
 	}
 
@@ -1177,7 +1198,7 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 				((pdc->sec_enabled) ? 2 : 1));
 	pdc_pkt->pkt_buf = calloc(1, pdc_pkt->pkt_buf_len);
 	if (pdc_pkt->pkt_buf == NULL) {
-		UET_PDS_ERR("failed to alloc packet buffer for close command");
+		UET_PDS_ERR("failed to alloc packet buffer for ctrl packet");
 		free(pdc_pkt);
 		return -ENOMEM;
 	}
@@ -1214,27 +1235,61 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 
 	/* fill in the control packet header */
 	ctrl_flags = ((UET_PDS_TYPE_CTRL << UET_PDS_TYPE_SHIFT) |
-		      (UET_PDS_CTRL_TYPE_CLOSE << UET_PDS_CTRL_TYPE_SHIFT) |
-		      (UET_PDS_CTRL_FLAGS_AR << UET_PDS_FLAGS_SHIFT));
+		      (ctrl_type << UET_PDS_CTRL_TYPE_SHIFT));
+
+	switch (ctrl_type) {
+	case UET_PDS_CTRL_TYPE_CLOSE:
+		ctrl_flags |= UET_PDS_CTRL_FLAGS_AR;
+		pdc->close_cmd_psn = pdc->next_psn;
+		cp_psn = pdc->close_cmd_psn;
+		break;
+	case UET_PDS_CTRL_TYPE_CLOSE_REQ:
+		ctrl_flags |= UET_PDS_CTRL_FLAGS_AR;
+		cp_psn = pdc->next_psn;
+		break;
+	case UET_PDS_CTRL_TYPE_ACK_REQ:
+		if (private_data == NULL) {
+			UET_PDS_ERR("private data is NULL for ACK request");
+			free(pdc_pkt->pkt_buf);
+			free(pdc_pkt);
+			return -EINVAL;
+		}
+		orig_pdc_pkt = (struct uet_pdc_pkt *)private_data;
+		cp_psn = orig_pdc_pkt->psn;
+		need_track = false;
+		break;
+	case UET_PDS_CTRL_TYPE_CLEAR:
+		cp_psn = 0;
+		need_track = false;
+		break;
+	default:
+		UET_PDS_ERR("invalid control type %u", ctrl_type);
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+		return -EINVAL;
+	}
 
 	ctrl_hdr->prlg.type_ctrl_flags = htons(ctrl_flags);
 	ctrl_hdr->rsvd = 0;
 
-	if (!uet_pds_tx_psn_allowed(pdc, pdc->next_psn)) {
+	/*
+	 * Only tracked control packets (CLOSE/CLOSE_REQ) consume a new PSN from
+	 * the tx window and must respect the MPR / peer window. Fire-and-forget
+	 * types (ACK_REQ reuses an already-sent PSN, CLEAR uses psn=0) are not
+	 * bound by this check.
+	 */
+	if (need_track && !uet_pds_tx_psn_allowed(pdc, cp_psn)) {
 		free(pdc_pkt->pkt_buf);
 		free(pdc_pkt);
 		return -EAGAIN;
 	}
 
-	/* Reserve the PSN; commit next_psn only after successful submission. */
-	pdc_pkt->psn = pdc->next_psn;
+	/* assign PSN for control packet */
+	pdc_pkt->psn = cp_psn;
 	ctrl_hdr->psn = htonl(pdc_pkt->psn);
-
 	ctrl_hdr->spdcid = htons(pdc->pdc_id);
 	ctrl_hdr->dpdcid = htons(pdc->dpdcid);
-
-	/* payload is 0x0 for close command */
-	ctrl_hdr->payload = 0;
+	ctrl_hdr->payload = htonl(payload);
 
 	/* build the IP header */
 	if (pdc->is_ipv6) {
@@ -1264,47 +1319,50 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 	pdc_pkt->tx_pkt_handle = NULL; /* no SES handle for control packets */
 	pdc_pkt->tx_pkt_acked = false;
 	pdc_pkt->flags = 0;
-	tx_bm_idx = pdc_pkt->psn - pdc->tx_bm_base_psn;
 
-	if (bm_get(pdc->tx_bm, tx_bm_idx, NULL) ||
-	    !bm_set(pdc->tx_bm, tx_bm_idx, pdc_pkt)) {
-		UET_PDS_ERR("PDC %u cannot track close PSN %u at tx_bm index %d",
-			    pdc->pdc_id, pdc_pkt->psn, tx_bm_idx);
-		free(pdc_pkt->pkt_buf);
-		free(pdc_pkt);
-		return -EIO;
+	if (need_track) {
+		tx_bm_idx = pdc_pkt->psn - pdc->tx_bm_base_psn;
+		if (bm_get(pdc->tx_bm, tx_bm_idx, NULL) ||
+		    !bm_set(pdc->tx_bm, tx_bm_idx, pdc_pkt)) {
+			UET_PDS_ERR("PDC %u can't track PSN %u at tx bm idx %d",
+				    pdc->pdc_id, pdc_pkt->psn, tx_bm_idx);
+			free(pdc_pkt->pkt_buf);
+			free(pdc_pkt);
+			return -EIO;
+		}
 	}
 
 	/* send the packet */
 	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
 	if (rc != 0) {
-		UET_PDS_ERR("failed to send close command for PDC %u",
-			    pdc->pdc_id);
-		bm_unset(pdc->tx_bm, tx_bm_idx);
+		UET_PDS_ERR("failed to send %s for PDC %u",
+			    PDS_CTRL_TYPE_TO_STR(ctrl_type), pdc->pdc_id);
+		if (need_track) {
+			bm_unset(pdc->tx_bm, tx_bm_idx);
+		}
 		free(pdc_pkt->pkt_buf);
 		free(pdc_pkt);
 		return rc;
 	}
 
-	pdc->close_cmd_psn = pdc_pkt->psn;
-	pdc->next_psn++;
-
 	/* the packet was sent successfully */
-	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX CLOSE COMMAND");
+	UET_PDS_DBG("PDC %u send ctrl packet (psn=%u, type=%s)",
+		    pdc->pdc_id, pdc_pkt->psn, PDS_CTRL_TYPE_TO_STR(ctrl_type));
 
-	/* set this packet in the tx_bm for tracking ACK */
-	UET_PDS_DBG("PDC %u tx_bm: base=%u psn=%u SET bit=%u (close cmd)",
-		    pdc->pdc_id, pdc->tx_bm_base_psn, pdc_pkt->psn,
-		    (pdc_pkt->psn - pdc->tx_bm_base_psn));
-
-	/* insert the packet to the end of the timeout queue for retries */
-	dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
-
-	UET_PDS_DBG("PDC %u close command sent (psn=%u)",
-		    pdc->pdc_id, pdc_pkt->psn);
+	if (need_track) {
+		pdc->next_psn++;
+		/* insert the packet to the end of the timeout queue for retries */
+		dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
+	} else {
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+	}
 
 	return 0;
 }
+/****************************************************************************/
+/*                            PDC Initiator APIs                            */
+/****************************************************************************/
 
 static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 				      struct uet_pdc *pdc)
@@ -1351,7 +1409,7 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 	}
 
 	/* all messages and packets have drained, send the close command */
-	rc = uet_pds_send_close_cmd(uet, pdc);
+	rc = uet_pds_send_ctrl_pkt(uet, pdc, UET_PDS_CTRL_TYPE_CLOSE, 0, NULL);
 	if (rc != 0) {
 		UET_PDS_ERR("PDC %u failed to send close command",
 			    pdc->pdc_id);
@@ -1372,6 +1430,45 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 /****************************************************************************/
 /*                             PDC Target APIs                              */
 /****************************************************************************/
+
+static int uet_pds_target_pdc_close(struct uet_instance *uet,
+				    struct uet_pdc *pdc)
+{
+	int rc;
+
+	if (pdc->close_started)
+		return 0;
+
+	if (pdc->state != PDC_STATE_ESTABLISHED) {
+		UET_PDS_DBG("PDC %u not established (state %d), skip close",
+			    pdc->pdc_id, pdc->state);
+		return -EINVAL;
+	}
+
+	/* Check if all outstanding packets have been ACK'ed. */
+	if (!dlist_empty(&pdc->tx_pkt_list_head)) {
+		UET_PDS_DBG("PDC %u has un-ACK'ed packets (cannot close PDC)",
+			    pdc->pdc_id);
+		return -EAGAIN;
+	}
+
+	/* all packets have drained, send the close request */
+	rc = uet_pds_send_ctrl_pkt(uet, pdc, UET_PDS_CTRL_TYPE_CLOSE_REQ,
+				   0, NULL);
+	if (rc != 0) {
+		UET_PDS_ERR("PDC %u failed to send close request command",
+			    pdc->pdc_id);
+		return rc;
+	}
+
+	/* set close_started if not already set */
+	pdc->close_started = true;
+
+	/* start the Close_REQ_Timer */
+	uet_gettime(&pdc->close_req_time);
+
+	return 0;
+}
 
 /****************************************************************************/
 /*                             SES->PDS APIs                                */
@@ -1521,6 +1618,8 @@ void uet_pds_finalize(struct uet_instance *uet)
 		     pds_state.new_pdc_timeout_cnt);
 	UET_PDS_INFO("%-30s : %u", "psn_range_close_cnt",
 		     pds_state.psn_range_close_cnt);
+	UET_PDS_INFO("%-30s : %u", "pdc_close_in_err_cnt",
+		     pds_state.pdc_close_in_err_cnt);
 
 	/* TODO: reclaim/free all packets stored in the bitmaps... */
 
@@ -2107,118 +2206,6 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	return 0;
 }
 
-static int uet_pds_send_ack_req_cp(struct uet_instance *uet,
-				   struct uet_pdc *pdc,
-				   struct uet_pdc_pkt *orig_pdc_pkt)
-{
-	struct uet_pdc_pkt *pdc_pkt;
-	struct uet_pds_ctrl *ctrl_hdr;
-	struct uet_entropy *entropy_hdr;
-	size_t ip_hdr_size;
-	uint16_t ctrl_flags;
-	int rc;
-
-	/* allocate the packet descriptor */
-	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
-	if (pdc_pkt == NULL) {
-		UET_PDS_ERR("failed to alloc PDC packet for ack req cp");
-		return -ENOMEM;
-	}
-
-	/* allocate the packet buffer */
-	pdc_pkt->pkt_buf_len = (uet->nic.max_pkt_size *
-				((pdc->sec_enabled) ? 2 : 1));
-	pdc_pkt->pkt_buf = calloc(1, pdc_pkt->pkt_buf_len);
-	if (pdc_pkt->pkt_buf == NULL) {
-		UET_PDS_ERR("failed to alloc packet buffer for ack req cp");
-		free(pdc_pkt);
-		return -ENOMEM;
-	}
-
-	/* reserve head space for security header if needed */
-	pdc_pkt->pkt = (pdc->sec_enabled)
-			? (pdc_pkt->pkt_buf + UET_SEC_MAX_HDR_LEN)
-			: pdc_pkt->pkt_buf;
-
-	ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
-				       sizeof(struct iphdr);
-
-	/* build Ethernet header */
-	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
-			  pdc->dst_mac_addr, pdc->src_mac_addr,
-			  pdc->is_ipv6);
-
-	/* set up pointers to headers */
-	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
-					     sizeof(struct ethhdr) +
-					     ip_hdr_size);
-	ctrl_hdr = (struct uet_pds_ctrl *)(pdc_pkt->pkt +
-					   sizeof(struct ethhdr) +
-					   ip_hdr_size +
-					   sizeof(struct uet_entropy));
-
-	pdc_pkt->pkt_len = (sizeof(struct ethhdr) +
-			    ip_hdr_size +
-			    sizeof(struct uet_entropy) +
-			    sizeof(struct uet_pds_ctrl));
-
-	/* fill in the entropy header */
-	entropy_hdr->entropy = htons(UET_DEFAULT_ENTROPY);
-
-	/* fill in the control packet header */
-	ctrl_flags = ((UET_PDS_TYPE_CTRL << UET_PDS_TYPE_SHIFT) |
-		      (UET_PDS_CTRL_TYPE_ACK_REQ << UET_PDS_CTRL_TYPE_SHIFT));
-
-	ctrl_hdr->prlg.type_ctrl_flags = htons(ctrl_flags);
-	ctrl_hdr->rsvd = 0;
-	ctrl_hdr->psn = htonl(orig_pdc_pkt->psn);
-	ctrl_hdr->spdcid = htons(pdc->pdc_id);
-	ctrl_hdr->dpdcid = htons(pdc->dpdcid);
-
-	/* payload is msg_id for ack request cp */
-	ctrl_hdr->payload = htonl((uint32_t)orig_pdc_pkt->msg_id);
-
-	/* build the IP header */
-	if (pdc->is_ipv6) {
-		uet_build_ipv6_hdr(uet,
-				   (struct ipv6hdr *)(pdc_pkt->pkt +
-						      sizeof(struct ethhdr)),
-				   pdc->dst_addr.v6,
-				   pdc->src_addr.v6,
-				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size -
-				    ip_hdr_size),
-				   uet->pds.ack_ip_tos,
-				   !pdc->sec_enabled);
-	} else {
-		uet_build_ipv4_hdr(uet,
-				   (struct iphdr *)(pdc_pkt->pkt +
-						    sizeof(struct ethhdr)),
-				   htonl(pdc->dst_addr.v4),
-				   htonl(pdc->src_addr.v4),
-				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
-				   uet->pds.ack_ip_tos,
-				   !pdc->sec_enabled);
-	}
-
-	/* send the packet */
-	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
-	if (rc != 0) {
-		UET_PDS_ERR("failed to send ack req cp for PDC %u",
-			    pdc->pdc_id);
-		free(pdc_pkt->pkt_buf);
-		free(pdc_pkt);
-		return rc;
-	}
-
-	/* the packet was sent successfully */
-	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "ACK REQ CP");
-
-	free(pdc_pkt->pkt_buf);
-	free(pdc_pkt);
-
-	return 0;
-}
-
 static int uet_pds_rtx_pkt(struct uet_instance *uet,
 			   struct uet_pdc *pdc,
 			   struct uet_pdc_pkt *pdc_pkt)
@@ -2228,7 +2215,8 @@ static int uet_pds_rtx_pkt(struct uet_instance *uet,
 
 	if (pdc_pkt->dst_recvd &&
 	    pdc_pkt->tx_retry_cnt < uet->pds.max_tx_retries) {
-		rc = uet_pds_send_ack_req_cp(uet, pdc, pdc_pkt);
+		rc = uet_pds_send_ctrl_pkt(uet, pdc, UET_PDS_CTRL_TYPE_ACK_REQ,
+					   pdc_pkt->msg_id, (void *)pdc_pkt);
 		if (rc != 0)
 			return rc;
 
@@ -2319,20 +2307,7 @@ int uet_pds_progress_tx_pkt(struct uet_instance *uet,
 		UET_PDS_ERR("PDC %u transitioning to ERROR state "
 			    "(max retries exceeded)",
 			    pdc->pdc_id);
-		pdc->state = PDC_STATE_ERROR;
-
-		/* notify the SES layer of the failed packet */
-		if (err_pkt_handle)
-			*err_pkt_handle = pdc_pkt->tx_pkt_handle;
-
-		dlist_remove(&pdc_pkt->node);
-
-		/* free the packet buffers and structure */
-		if (pdc_pkt->ack_buf)
-			free(pdc_pkt->ack_buf);
-		if (pdc_pkt->pkt_buf)
-			free(pdc_pkt->pkt_buf);
-		free(pdc_pkt);
+		uet_pds_close_pdc_in_error(uet, pdc);
 
 		/*
 		 * Will return immediately to give the SES layer a chance to
@@ -2390,6 +2365,23 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 			continue; /* PDC is still PENDING */
 		}
 
+		/*
+		 * If the initiator does not respond within Close_REQ_Time,
+		 * target close the PDC in error.
+		 */
+		if (!pdc->is_initiator && pdc->close_started &&
+		    (pdc->close_req_time != 0)) {
+			uet_gettime(&now);
+
+			if ((now - pdc->close_req_time) >
+			    pds_close_req_time_ms) {
+				UET_PDS_WARN("PDC %u Close_REQ_Timer expired, "
+					     "closing in error", pdc->pdc_id);
+				uet_pds_close_pdc_in_error(uet, pdc);
+				continue;
+			}
+		}
+
 		dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
 					     struct uet_pdc_pkt, pdc_pkt,
 					     node, tmp2) {
@@ -2404,7 +2396,7 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 			if (rc == -EPROTO)
 				return -EPROTO;
 
-			/* paket was retransmitted, check the next packet */
+			/* packet was retransmitted, check the next packet */
 			if (rc == -EAGAIN)
 				continue;
 		}
@@ -2570,7 +2562,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 	/* TODO: UDP support */
 	entropy_hdr->entropy = htons(pdc_pkt->pkt_pp.entropy_val);
 
-	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_CLR_CLS
+	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_CLR
 				       : UET_PDS_ACK_FLAGS_NONE;
 	ack_pds->prlg.type_next_flags =
 		htons((uet->pds.ack_type << UET_PDS_TYPE_SHIFT) |
@@ -2600,13 +2592,13 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 }
 
 static void uet_pds_update_cack(struct uet_pdc *pdc,
-				struct uet_pdc_pkt *pdc_pkt)
+				uint32_t pds_clear_psn)
 {
 	struct uet_pdc_pkt *temp;
 	int max_rx_bm_idx;
 	int i = 0;
 
-	UET_PDS_UPDATE_PSN(pdc->max_clear_psn, pdc_pkt->pkt_pp.pds_clear_psn);
+	UET_PDS_UPDATE_PSN(pdc->max_clear_psn, pds_clear_psn);
 
 	max_rx_bm_idx = bm_max(pdc->rx_bm);
 	for (i = 0; i <= max_rx_bm_idx; i++) {
@@ -3073,7 +3065,7 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 			pdc->accepted_bytes +=
 				uet_max(pdc_pkt->pkt_pp.pkt_payload_len,
 					uet->pds.ack_gen_min_pkt_add);
-			uet_pds_update_cack(pdc, pdc_pkt);
+			uet_pds_update_cack(pdc, pdc_pkt->pkt_pp.pds_clear_psn);
 			uet_pds_update_sack_base(pdc, pdc_pkt, false);
 			/* transmit ACK */
 			if (uet_pds_should_sack(uet, pdc, pdc_pkt)) {
@@ -3285,18 +3277,17 @@ static int uet_pds_nack_action(uet_pds_nack_code_t code)
 
 /*
  * Close a PDC in error. All outstanding Tx packets are reported to SES as
- * unrecoverable failures, and the PDC is transitioned to the ERROR state so
- * no further traffic is accepted on it.
+ * unrecoverable failures, and start PDC close procedure.
  */
 static void uet_pds_close_pdc_in_error(struct uet_instance *uet,
 				       struct uet_pdc *pdc)
 {
 	struct uet_pdc_pkt *pdc_pkt;
 	struct dlist_entry *tmp;
+	int rc;
 
 	UET_PDS_ERR("PDC %u closing in error", pdc->pdc_id);
-
-	pdc->state = PDC_STATE_ERROR;
+	pds_state.pdc_close_in_err_cnt++;
 
 	/* fail and free all outstanding Tx packets, notifying SES */
 	dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
@@ -3318,6 +3309,22 @@ static void uet_pds_close_pdc_in_error(struct uet_instance *uet,
 			free(pdc_pkt->pkt_buf);
 		free(pdc_pkt);
 	}
+
+	/*
+	 * The Close Command/Request sent on the first pass has itself
+	 * exhausted retries (or an error hit while already closing).
+	 * Free the PDC to break the retry loop.
+	 */
+	if (pdc->close_started) {
+		UET_PDS_ERR("PDC %u close already started", pdc->pdc_id);
+		uet_pdsm_free_pdc(pdc);
+		return;
+	}
+
+	if (pdc->is_initiator)
+		uet_pds_initiate_pdc_close(uet, pdc);
+	else
+		uet_pds_target_pdc_close(uet, pdc);
 }
 
 /*
@@ -3566,6 +3573,7 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		 * outgoing PDCs when it is newer than the current one.
 		 */
 		if (pdc->sec_enabled &&
+		    (pds_psn_method == UET_PDS_PSN_METHOD_0RTT) &&
 		    (pp->pds_flags & UET_PDS_ACK_FLAGS_EPSN)) {
 			start_psn = uet_sec_sd_get_ini_start_psn(pdc->sdi);
 
@@ -3582,19 +3590,6 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		rc = uet_pds_shift_tx_window(uet, pdc);
 		if (rc != 0)
 			return rc;
-
-		/*
-		 * Do not free the PDC while packets are still pending in
-		 * bitmaps/queues. Keep it in CLOSING and wait for drain.
-		 */
-		if ((bm_count(pdc->tx_bm) > 0) ||
-		    !dlist_empty(&pdc->tx_pkt_list_head)) {
-			UET_PDS_WARN("PDC %u close ACK received but pending "
-				     "packets remain (tx_bm=%d)",
-				     pdc->pdc_id,
-				     bm_count(pdc->tx_bm));
-			return 0;
-		}
 
 		/* free the PDC */
 		uet_pdsm_free_pdc(pdc);
@@ -3625,12 +3620,21 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	if (rc != 0)
 		return rc;
 
-	/* TODO:
-	 * If the UET_PDS_ACK_FLAGS_REQ_TGT_CLR flag was set on the ACK,
-	 * immediately send a PDS CLEAR control packet now. This allows the
-	 * CLEAR to be acknowledged right away instead of waiting for the
-	 * next request to be sent that would contain a cumulative clear PSN.
+	/*
+	 * If the UET_PDS_ACK_FLAGS_REQ_CLR flag was set on the ACK,
+	 * immediately send a PDS CLEAR control packet now.
+	 * Note: the UET spec only requires a standalone clear CP when no PDS
+	 * request is pending to carry clear_psn_offset
 	 */
+	if (pdc->is_initiator &&
+	    (pp->pds_flags & UET_PDS_ACK_FLAGS_REQ_CLR)) {
+		rc = uet_pds_send_ctrl_pkt(uet, pdc, UET_PDS_CTRL_TYPE_CLEAR,
+				      pdc->tx_bm_base_psn - 1, NULL);
+		if ((rc != 0) && (rc != -EAGAIN)) {
+			UET_PDS_WARN("PDC %u failed to send clear cp (rc=%d)",
+				     pdc->pdc_id, rc);
+		}
+	}
 
 	/*
 	 * Check if PDC has close_requested set and all messages have drained.
@@ -3808,19 +3812,117 @@ static int uet_pds_process_ack_req_cp(struct uet_instance *uet,
 	return 0;
 }
 
+static int uet_pds_process_close_req_cp(struct uet_instance *uet,
+					struct uet_pdc *pdc,
+					struct uet_parsed_pkt *pp)
+{
+	struct uet_pdc_pkt temp_pkt;
+
+	UET_PDS_DBG("Received CLOSE_REQ cp (spdcid=%u dpdcid=%u)",
+		    pp->pds_spdcid, pp->pds_dpdcid);
+	pdc->close_requested = true;
+
+	memset(&temp_pkt, 0, sizeof(temp_pkt));
+	memcpy(&temp_pkt.pkt_pp, pp, sizeof(*pp));
+	uet_pds_tx_ack_pkt(uet, pdc, &temp_pkt, UET_HDR_NONE, 0, NULL, false);
+	uet_pds_initiate_pdc_close(uet, pdc);
+
+	return 0;
+}
+
+static int uet_pds_process_close_command_cp(struct uet_instance *uet,
+					    struct uet_pdc *pdc,
+					    struct uet_parsed_pkt *pp)
+{
+	struct uet_pdc_pkt temp_pkt;
+	struct uet_pdc_pkt *pdc_pkt;
+	struct dlist_entry *tmp;
+	uint32_t expected_psn;
+	int rc;
+
+	UET_PDS_DBG("Received CLOSE command (spdcid=%u dpdcid=%u)",
+		    pp->pds_spdcid, pp->pds_dpdcid);
+
+	pdc->close_started = true;
+
+	/* target transitions to CLOSING state */
+	pdc->state = PDC_STATE_CLOSING;
+
+	/* ALL PSNs on forward direction are implicitly cleared */
+	pdc->max_clear_psn = pdc->max_rcvd_psn;
+	pdc->cack_psn = pdc->max_clear_psn;
+	uet_pds_shift_rx_window(uet, pdc);
+
+	/*
+	 * Verify the PDC is idle with no outstanding TX packets.
+	 * There should be no active PSNs in the return direction
+	 * when a close command is received.
+	 */
+	if (bm_count(pdc->tx_bm) > 0) {
+		UET_PDS_WARN("PDC %u PDC_CLOSE_IN_ERR: received CLOSE "
+			     "with %d outstanding TX packets",
+			     pdc->pdc_id, bm_count(pdc->tx_bm));
+		uet_pds_tx_nack(uet, pdc, pp, UET_NACK_CLOSING_IN_ERR,
+				bm_count(pdc->tx_bm));
+		uet_pds_close_pdc_in_error(uet, pdc);
+		return -EINVAL;
+	}
+
+	/* set up temp pdc_pkt with parsed control packet */
+	memset(&temp_pkt, 0, sizeof(temp_pkt));
+	memcpy(&temp_pkt.pkt_pp, pp, sizeof(*pp));
+
+	if (pdc->sec_enabled && (pds_psn_method == UET_PDS_PSN_METHOD_0RTT)) {
+		/* EXPECTED_0RTT_START, advance the SDI's
+		 * Expected_PSN past this PDC's Start_PSN and
+		 * return it in the closing ACK.
+		 */
+		expected_psn = uet_sec_sd_get_tgt_start_psn(pdc->sdi);
+
+		if (UET_PDS_PSN_AFTER_EQ(pdc->start_psn, expected_psn)) {
+			expected_psn = (pdc->start_psn + 1);
+			uet_sec_sd_set_tgt_start_psn(pdc->sdi, expected_psn);
+		}
+
+		UET_PDS_INFO("PDC %u close: SDI %u Expected_PSN -> %u",
+			     pdc->pdc_id, pdc->sdi, expected_psn);
+
+		rc = uet_pds_tx_close_ack_epsn(uet, pdc, &temp_pkt,
+					       expected_psn);
+	} else {
+		/* build and send a plain ACK packet */
+		rc = uet_pds_tx_ack_pkt(uet, pdc, &temp_pkt, UET_HDR_NONE, 0,
+					NULL, false);
+	}
+	if (rc != 0) {
+		UET_PDS_ERR("failed to send ACK for CLOSE");
+		return rc;
+	}
+
+	uet_pdsm_free_pdc(pdc);
+
+	return 0;
+}
+
+static int uet_pds_process_clear_cp(struct uet_instance *uet,
+				    struct uet_pdc *pdc,
+				    struct uet_parsed_pkt *pp)
+{
+	UET_PDS_DBG("Received CLEAR cp (spdcid=%u dpdcid=%u)",
+		    pp->pds_spdcid, pp->pds_dpdcid);
+
+	uet_pds_update_cack(pdc, pp->pds_ctrl_payload);
+	return uet_pds_shift_rx_window(uet, pdc);
+}
+
 static int uet_pds_process_control(struct uet_instance *uet,
 				   struct uet_parsed_pkt *pp,
 				   uint8_t *pkt,
 				   int pkt_len)
 {
 	struct uet_pdc *pdc;
-	bool send_ack = false;
 	uint32_t expected_psn;
 	int rc;
-
-	/* check if ACK is requested */
-	if (pp->pds_flags & UET_PDS_CTRL_FLAGS_AR)
-		send_ack = true;
 
 	/* find the target PDC */
 	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
@@ -3853,92 +3955,14 @@ static int uet_pds_process_control(struct uet_instance *uet,
 	case UET_PDS_CTRL_TYPE_ACK_REQ:
 		return uet_pds_process_ack_req_cp(uet, pdc, pp);
 
+	case UET_PDS_CTRL_TYPE_CLOSE_REQ:
+		return uet_pds_process_close_req_cp(uet, pdc, pp);
+
 	case UET_PDS_CTRL_TYPE_CLOSE:
-		UET_PDS_DBG("Received CLOSE command (spdcid=%u dpdcid=%u)",
-			    pp->pds_spdcid, pp->pds_dpdcid);
+		return uet_pds_process_close_command_cp(uet, pdc, pp);
 
-		/*
-		 * If a close command was already received (PDC is in CLOSING
-		 * state), this is a duplicate/retransmit.
-		 */
-		if (pdc->state == PDC_STATE_CLOSING) {
-			UET_PDS_DBG("PDC %u already CLOSING, duplicate CLOSE "
-				    "command",
-				    pdc->pdc_id);
-			uet_pds_tx_nack(uet, pdc, pp, UET_NACK_CLOSING, 0);
-			return 0;
-		}
-
-		/*
-		 * Verify the PDC is idle with no outstanding TX packets.
-		 * There should be no active PSNs in the return direction
-		 * when a close command is received.
-		 */
-		if (bm_count(pdc->tx_bm) > 0) {
-			UET_PDS_WARN("PDC %u PDC_CLOSE_IN_ERR: received CLOSE "
-				     "with %d outstanding TX packets",
-				     pdc->pdc_id, bm_count(pdc->tx_bm));
-			uet_pds_tx_nack(uet, pdc, pp, UET_NACK_CLOSING_IN_ERR,
-					bm_count(pdc->tx_bm));
-			return -EINVAL;
-		}
-
-		/* send ACK if requested */
-		if (send_ack) {
-			struct uet_pdc_pkt temp_pkt;
-
-			UET_PDS_DBG("PDC %u Tx ACK for CLOSE command",
-				    pdc->pdc_id);
-
-			/* set up temp pdc_pkt with parsed control packet */
-			memset(&temp_pkt, 0, sizeof(temp_pkt));
-			memcpy(&temp_pkt.pkt_pp, pp, sizeof(*pp));
-
-			if (pdc->sec_enabled &&
-			    (pds_psn_method == UET_PDS_PSN_METHOD_0RTT)) {
-				/* EXPECTED_0RTT_START, advance the SDI's
-				 * Expected_PSN past this PDC's Start_PSN and
-				 * return it in the closing ACK.
-				 */
-				expected_psn =
-					uet_sec_sd_get_tgt_start_psn(pdc->sdi);
-
-				if (UET_PDS_PSN_AFTER_EQ(pdc->start_psn,
-							 expected_psn)) {
-					expected_psn = (pdc->start_psn + 1);
-					uet_sec_sd_set_tgt_start_psn(pdc->sdi,
-								     expected_psn);
-				}
-
-				UET_PDS_INFO("PDC %u close: SDI %u "
-					     "Expected_PSN -> %u",
-					     pdc->pdc_id, pdc->sdi,
-					     expected_psn);
-
-				rc = uet_pds_tx_close_ack_epsn(uet, pdc,
-							       &temp_pkt,
-							       expected_psn);
-			} else {
-				/* build and send a plain ACK packet */
-				rc = uet_pds_tx_ack_pkt(uet, pdc, &temp_pkt,
-							UET_HDR_NONE, 0,
-							NULL, false);
-			}
-			if (rc != 0) {
-				UET_PDS_ERR("failed to send ACK for CLOSE");
-				return rc;
-			}
-		}
-
-		/*
-		 * Transition to CLOSING state and save the close command PSN.
-		 * Note: The PDC is not immediately freed to allow detection
-		 * of late-arriving packets.
-		 */
-		pdc->state = PDC_STATE_CLOSING;
-		pdc->close_cmd_psn = pp->pds_psn;
-
-		break;
+	case UET_PDS_CTRL_TYPE_CLEAR:
+		return uet_pds_process_clear_cp(uet, pdc, pp);
 
 	case UET_PDS_CTRL_TYPE_PROBE:
 	case UET_PDS_CTRL_TYPE_CREDIT:

@@ -1715,9 +1715,21 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 	case UET_TX_DESC_STATE_ERR:
 		if (tx_desc->unack_pkts)
 			break;
+		if (tx_desc->remaining_bytes) {
+			if (!(tx_desc->desc_flags &
+			      UET_TX_DESC_FLAG_READ_RSP)) {
+				pds->downcall.msg_cmpl_ind(
+					uet_ep, tx_desc->dst_addr_handle,
+					tx_desc->pds_mode, tx_desc->msg_id);
+				tx_desc->remaining_bytes = 0;
+			}
+		}
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
-			if (tx_desc->rx_desc->expected_rd_rsp)
-				break;
+			if (tx_desc->rx_desc->expected_rd_rsp) {
+				uet_rx_desc_active_list_remove(
+					tx_desc->rx_desc);
+				tx_desc->rx_desc->expected_rd_rsp = 0;
+			}
 			pds->downcall.msg_cmpl_ind(
 				uet_ep, tx_desc->dst_addr_handle,
 				tx_desc->pds_mode, tx_desc->msg_id);
@@ -1725,6 +1737,7 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 			pds->downcall.msg_cmpl_ind(
 				uet_ep, tx_desc->dst_addr_handle,
 				tx_desc->pds_mode, tx_desc->msg_id);
+
 		tx_desc->state = UET_TX_DESC_STATE_ERR_COMPLETE;
 		break;
 	default:
@@ -5210,9 +5223,9 @@ static int uet_pds_to_ses_pds_err(uet_pkt_handle_t tx_pkt_handle,
 	tx_desc = (struct uet_tx_desc *) tx_pkt_handle;
 
 	UET_API_ERR("SES got indication of unrecoverable error from PDS");
+	tx_desc->unack_pkts--;
 
-	uet_tx_desc_set_err(tx_desc, FI_EIO,
-			    UET_TX_DESC_STATE_ERR_COMPLETE);
+	uet_tx_desc_set_err(tx_desc, FI_EIO, UET_TX_DESC_STATE_ERR);
 
 	return FI_SUCCESS;
 }
@@ -5433,8 +5446,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
 			pkt_len = 0;
-			if (flags & UET_PDS_FLAG_SOM)
-				flags |= UET_PDS_FLAG_MAINTAIN_PDC;
+			flags |= UET_PDS_FLAG_MAINTAIN_PDC;
 		} else
 			pkt_len = payload_len;
 
@@ -5466,8 +5478,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 		}
 
 		if (uet_tx_desc_expects_amo_rsp_data(tx_desc)) {
-			if (flags & UET_PDS_FLAG_SOM)
-				flags |= UET_PDS_FLAG_MAINTAIN_PDC;
+			flags |= UET_PDS_FLAG_MAINTAIN_PDC;
 		}
 
 		if (tx_desc->buf_desc.type == UET_MSG_BUF_TYPE_SEG) {
@@ -5649,8 +5660,9 @@ static void uet_rx_msg_age(struct uet_ep *uet_ep, time_t now)
 		if (rx_desc->desc_flags & UET_RX_DESC_FLAG_READ_RSP) {
 			UET_API_ERR("Read Response Timeout");
 			uet_rx_desc_active_list_remove(rx_desc);
+			rx_desc->expected_rd_rsp = 0;
 			uet_tx_desc_set_err(rx_desc->tx_desc, FI_EIO,
-					    UET_TX_DESC_STATE_ERR_COMPLETE);
+					    UET_TX_DESC_STATE_ERR);
 		} else {
 			UET_API_ERR("RX Message Timeout");
 			uet_rx_cq_post_err(rx_desc, FI_EIO);
@@ -7311,8 +7323,6 @@ static void uet_ep_progress_locked(struct uet_ep *uet_ep)
 	case -FI_EAGAIN:
 		break;
 	default:
-		uet_tx_desc_set_err((struct uet_tx_desc *) err_pkt_handle,
-				FI_ETIMEDOUT, UET_TX_DESC_STATE_ERR_COMPLETE);
 		break;
 	}
 

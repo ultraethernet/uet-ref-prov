@@ -20,7 +20,7 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 {
 	struct uet_sec *sec_hdr;
 	struct uet_pds_req *pds_hdr;
-	uint16_t pds_type, next_hdr, flags;
+	uint16_t pds_type, next_hdr;
 	bool pds_req;
 	size_t ip_hdr_size = (is_ipv6) ? sizeof(struct ipv6hdr) :
 					 sizeof(struct iphdr);
@@ -56,9 +56,6 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 
 	next_hdr = ((ntohs(pds_hdr->prlg.type_next_flags) &
 		     UET_PDS_NEXT_HDR_MASK) >> UET_PDS_NEXT_HDR_SHIFT);
-
-	flags = ((ntohs(pds_hdr->prlg.type_next_flags) &
-		  UET_PDS_FLAGS_MASK) >> UET_PDS_FLAGS_SHIFT);
 
 	switch (pds_type) {
 	case UET_PDS_TYPE_ROD_REQ:
@@ -99,8 +96,8 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 			return true;
 		break;
 	case UET_HDR_NONE:
-		/* closing ACK with expected PSN for 0-RTT */
-		if ((pds_req == false) && (flags & UET_PDS_ACK_FLAGS_EPSN)) {
+		/* closing ACK */
+		if (pds_req == false) {
 			*pkt_is_ack = true;
 			return true;
 		}

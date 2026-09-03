@@ -181,7 +181,8 @@ struct UET_PACKED uet_pds_ack {
 #define UET_PDS_ACK_FLAGS_M           0x20 /* original pkt was ECN marked */
 #define UET_PDS_ACK_FLAGS_RETX        0x10 /* ACK to a retransmit */
 #define UET_PDS_ACK_FLAGS_P           0x08 /* ACK to a probe (PSN ignored) */
-#define UET_PDS_ACK_FLAGS_REQ_CLR_CLS 0x06 /* target requests clear or close */
+#define UET_PDS_ACK_FLAGS_REQ_CLS     0x04 /* target requests close */
+#define UET_PDS_ACK_FLAGS_REQ_CLR     0x02 /* target requests clear */
 #define UET_PDS_ACK_FLAGS_RSV         0x01 /* Reserved */
 #define UET_PDS_ACK_FLAGS_NONE        0x00
 	struct uet_pds_prlg prlg;
