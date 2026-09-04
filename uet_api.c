@@ -5872,15 +5872,21 @@ static ssize_t uet_recv_api_common(
 	/* allocate iov and init */
 	iov_handle = NULL;
 	if (seg == NULL) {
-		iov_handle = calloc(iov_count, sizeof(struct iovec));
-		if (iov_handle == NULL) {
-			UET_API_ERR("Allocation of iov memory failed");
-			return -FI_ENOMEM;
+		/* A single contiguous buffer is recorded directly below.  Only a
+		 * vector needs a private copy that outlives this call.
+		 */
+		if (iov_count > 1) {
+			iov_handle = calloc(iov_count, sizeof(struct iovec));
+			if (iov_handle == NULL) {
+				UET_API_ERR("Allocation of iov memory failed");
+				return -FI_ENOMEM;
+			}
 		}
 
 		for (i = 0; i < iov_count; i++) {
 			msg_len += iov[i].iov_len;
-			iov_handle[i] = iov[i];
+			if (iov_handle != NULL)
+				iov_handle[i] = iov[i];
 		}
 	}
 
