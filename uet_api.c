@@ -6319,26 +6319,35 @@ static ssize_t uet_send_req_api_common(
 }
 
 #if ENABLE_VERBS
+static int uet_fid_nic_close(struct fid *fid);
+static int uet_fid_nic_control(struct fid *fid, int command, void *arg);
+
 void uet_verbs_fi_freeinfo(struct fi_info *info)
 {
-	if (info) {
-		if (info->tx_attr)
-			free(info->tx_attr);
-		if (info->rx_attr)
-			free(info->rx_attr);
-		if (info->ep_attr)
+	struct fi_info *next;
+
+	for (; info; info = next) {
+		next = info->next;
+		free(info->src_addr);
+		free(info->dest_addr);
+		free(info->tx_attr);
+		free(info->rx_attr);
+		if (info->ep_attr) {
+			free(info->ep_attr->auth_key);
 			free(info->ep_attr);
-		if (info->domain_attr)
-			free(info->domain_attr);
-		if (info->fabric_attr)
-			free(info->fabric_attr);
-		if (info->nic) {
-			if (info->nic->device_attr)
-				free(info->nic->device_attr);
-			if (info->nic->link_attr)
-				free(info->nic->link_attr);
-			free(info->nic);
 		}
+		if (info->domain_attr) {
+			free(info->domain_attr->auth_key);
+			free(info->domain_attr->name);
+			free(info->domain_attr);
+		}
+		if (info->fabric_attr) {
+			free(info->fabric_attr->name);
+			free(info->fabric_attr->prov_name);
+			free(info->fabric_attr);
+		}
+		if (info->nic)
+			uet_fid_nic_close(&info->nic->fid);
 		free(info);
 	}
 }
@@ -6381,117 +6390,122 @@ err:
 struct fi_info *uet_verbs_fi_dupinfo(struct fi_info *info)
 {
 	struct fi_info *dup;
-	struct fi_tx_attr *tx_attr = NULL;
-	struct fi_rx_attr *rx_attr = NULL;
-	struct fi_ep_attr *ep_attr = NULL;
-	struct fi_domain_attr *domain_attr = NULL;
-	struct fi_fabric_attr *fabric_attr = NULL;
-	struct fid_nic *nic = NULL;
-	struct fi_device_attr *device_attr;
-	struct fi_link_attr *link_attr;
+	int rc;
+
+	if (!info)
+		return uet_verbs_fi_allocinfo();
 
 	dup = calloc(1, sizeof(struct fi_info));
 	if (dup == NULL)
-		goto err;
+		return NULL;
 
 	*dup = *info;
+	dup->next = NULL;
+	dup->src_addr = NULL;
+	dup->dest_addr = NULL;
+	dup->tx_attr = NULL;
+	dup->rx_attr = NULL;
+	dup->ep_attr = NULL;
+	dup->domain_attr = NULL;
+	dup->fabric_attr = NULL;
+	dup->nic = NULL;
+
+	if (info->src_addr) {
+		dup->src_addr = malloc(info->src_addrlen);
+		if (!dup->src_addr)
+			goto err;
+		memcpy(dup->src_addr, info->src_addr, info->src_addrlen);
+	}
+
+	if (info->dest_addr) {
+		dup->dest_addr = malloc(info->dest_addrlen);
+		if (!dup->dest_addr)
+			goto err;
+		memcpy(dup->dest_addr, info->dest_addr, info->dest_addrlen);
+	}
 
 	if (info->tx_attr) {
-		tx_attr = calloc(1, sizeof(struct fi_tx_attr));
-		if (tx_attr == NULL)
+		dup->tx_attr = malloc(sizeof(*dup->tx_attr));
+		if (!dup->tx_attr)
 			goto err;
-
-		*tx_attr = *info->tx_attr;
-		info->tx_attr = tx_attr;
+		*dup->tx_attr = *info->tx_attr;
 	}
 
 	if (info->rx_attr) {
-		rx_attr = calloc(1, sizeof(struct fi_rx_attr));
-		if (rx_attr == NULL)
+		dup->rx_attr = malloc(sizeof(*dup->rx_attr));
+		if (!dup->rx_attr)
 			goto err;
-
-		*rx_attr = *info->rx_attr;
-		info->rx_attr = rx_attr;
+		*dup->rx_attr = *info->rx_attr;
 	}
 
 	if (info->ep_attr) {
-		ep_attr = calloc(1, sizeof(struct fi_ep_attr));
-		if (ep_attr == NULL)
+		dup->ep_attr = malloc(sizeof(*dup->ep_attr));
+		if (!dup->ep_attr)
 			goto err;
-
-		*ep_attr = *info->ep_attr;
-		info->ep_attr = ep_attr;
+		*dup->ep_attr = *info->ep_attr;
+		dup->ep_attr->auth_key = NULL;
+		if (info->ep_attr->auth_key) {
+			dup->ep_attr->auth_key = malloc(info->ep_attr->auth_key_size);
+			if (!dup->ep_attr->auth_key)
+				goto err;
+			memcpy(dup->ep_attr->auth_key, info->ep_attr->auth_key,
+			       info->ep_attr->auth_key_size);
+		}
 	}
 
 	if (info->domain_attr) {
-		domain_attr = calloc(1, sizeof(struct fi_domain_attr));
-		if (domain_attr == NULL)
+		dup->domain_attr = malloc(sizeof(*dup->domain_attr));
+		if (!dup->domain_attr)
 			goto err;
-
-		*domain_attr = *info->domain_attr;
-		info->domain_attr = domain_attr;
+		*dup->domain_attr = *info->domain_attr;
+		dup->domain_attr->name = NULL;
+		dup->domain_attr->auth_key = NULL;
+		if (info->domain_attr->name) {
+			dup->domain_attr->name = strdup(info->domain_attr->name);
+			if (!dup->domain_attr->name)
+				goto err;
+		}
+		if (info->domain_attr->auth_key) {
+			dup->domain_attr->auth_key =
+				malloc(info->domain_attr->auth_key_size);
+			if (!dup->domain_attr->auth_key)
+				goto err;
+			memcpy(dup->domain_attr->auth_key,
+			       info->domain_attr->auth_key,
+			       info->domain_attr->auth_key_size);
+		}
 	}
 
 	if (info->fabric_attr) {
-		fabric_attr = calloc(1, sizeof(struct fi_fabric_attr));
-		if (fabric_attr == NULL)
+		dup->fabric_attr = malloc(sizeof(*dup->fabric_attr));
+		if (!dup->fabric_attr)
 			goto err;
-
-		*fabric_attr = *info->fabric_attr;
-		info->fabric_attr = fabric_attr;
+		*dup->fabric_attr = *info->fabric_attr;
+		dup->fabric_attr->name = NULL;
+		dup->fabric_attr->prov_name = NULL;
+		if (info->fabric_attr->name) {
+			dup->fabric_attr->name = strdup(info->fabric_attr->name);
+			if (!dup->fabric_attr->name)
+				goto err;
+		}
+		if (info->fabric_attr->prov_name) {
+			dup->fabric_attr->prov_name =
+				strdup(info->fabric_attr->prov_name);
+			if (!dup->fabric_attr->prov_name)
+				goto err;
+		}
 	}
 
 	if (info->nic) {
-		nic = calloc(1, sizeof(struct fid_nic));
-		if (nic == NULL)
+		rc = uet_fid_nic_control(&info->nic->fid, FI_DUP, &dup->nic);
+		if (rc)
 			goto err;
-
-		*nic = *info->nic;
-		info->nic = nic;
-
-		if (nic->device_attr) {
-			device_attr = calloc(1, sizeof(struct fi_device_attr));
-			if (device_attr == NULL)
-				goto err;
-
-			*device_attr = *info->nic->device_attr;
-			info->nic->device_attr = device_attr;
-		}
-
-		if (nic->link_attr) {
-			link_attr = calloc(1, sizeof(struct fi_link_attr));
-			if (link_attr == NULL)
-				goto err;
-
-			*link_attr = *info->nic->link_attr;
-			info->nic->link_attr = link_attr;
-		}
 	}
 
 	return dup;
 
 err:
-	if (dup) {
-		if (tx_attr)
-			free(tx_attr);
-		if (rx_attr)
-			free(rx_attr);
-		if (ep_attr)
-			free(ep_attr);
-		if (domain_attr)
-			free(domain_attr);
-		if (fabric_attr)
-			free(fabric_attr);
-		if (nic) {
-			if (device_attr)
-				free(device_attr);
-			if (link_attr)
-				free(link_attr);
-			free(nic);
-		}
-		free(dup);
-	}
-
+	uet_verbs_fi_freeinfo(dup);
 	return NULL;
 }
 
