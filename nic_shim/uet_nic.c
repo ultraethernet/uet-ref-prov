@@ -349,6 +349,26 @@ extern void nic_xdp_finalize(struct uet_nic *nic);
 extern int nic_xdp_initialize(struct uet_nic *nic);
 #endif
 
+#if ENABLE_VPP
+/* VPP NIC protocol callbacks remain private to the shim implementation. */
+extern int nic_vpp_getinfo(struct uet_nic *nic,
+			   struct uet_nic_info *nic_info);
+extern int nic_vpp_configure_info(struct uet_nic *nic,
+				  struct fi_info *info);
+extern int nic_vpp_ep_register(struct uet_nic *nic,
+			       struct uet_ep *ep, void **context);
+extern void nic_vpp_ep_unregister(struct uet_nic *nic, void *context);
+extern int nic_vpp_get_nh(struct uet_nic *nic, const struct uet_fa *fa,
+			  bool is_ipv6, uint8_t *mac);
+extern int nic_vpp_tx_pkt(struct uet_nic *nic, void *pkt, void *iphdr,
+			  size_t pkt_size);
+extern int nic_vpp_rx_pkt(struct uet_nic *nic, void *pkt,
+			  size_t pkt_buf_size, size_t *rx_pkt_size);
+extern int nic_vpp_rx_poll(struct uet_nic *nic);
+extern void nic_vpp_finalize(struct uet_nic *nic);
+extern int nic_vpp_initialize(struct uet_nic *nic);
+#endif
+
 /* init nic resources */
 int uet_nic_initialize(struct uet_nic *nic)
 {
@@ -357,7 +377,11 @@ int uet_nic_initialize(struct uet_nic *nic)
 	/* get interface name from environment variable */
 	nic_shim = getenv(UET_NIC_SHIM);
 
-#if ENABLE_XDP
+#if ENABLE_VPP
+	/* The dedicated VPP build uses VPP unless explicitly overridden. */
+	if (nic_shim == NULL)
+		nic_shim = "vpp";
+#elif ENABLE_XDP
 	/* for an XDP build, make its shim the default */
 	if (nic_shim == NULL)
 		nic_shim = "xdp";
@@ -378,6 +402,19 @@ int uet_nic_initialize(struct uet_nic *nic)
 		nic->nic_rx_poll     = nic_xdp_rx_poll;
 		nic->nic_finalize    = nic_xdp_finalize;
 		nic->nic_initialize  = nic_xdp_initialize;
+#endif
+#if ENABLE_VPP
+	} else if (strcmp(nic_shim, "vpp") == 0) {
+		nic->nic_getinfo       = nic_vpp_getinfo;
+		nic->nic_configure_info = nic_vpp_configure_info;
+		nic->nic_ep_register   = nic_vpp_ep_register;
+		nic->nic_ep_unregister = nic_vpp_ep_unregister;
+		nic->nic_get_nh        = nic_vpp_get_nh;
+		nic->nic_tx_pkt        = nic_vpp_tx_pkt;
+		nic->nic_rx_pkt        = nic_vpp_rx_pkt;
+		nic->nic_rx_poll       = nic_vpp_rx_poll;
+		nic->nic_finalize      = nic_vpp_finalize;
+		nic->nic_initialize    = nic_vpp_initialize;
 #endif
 	} else {
 		UET_API_ERR("invalid UET_NIC_SHIM environment variable");
