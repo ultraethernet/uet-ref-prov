@@ -553,7 +553,9 @@ struct uet_tx_rtr_token_cb {
 /* key for endpoint lookup */
 struct uet_ep_key {
 	bool ipv6_addr;
+	bool absolute;
 	struct uet_fa ip_addr;
+	uint32_t job_id;
 	uint16_t pid_on_fep;
 	uint16_t index;
 };
