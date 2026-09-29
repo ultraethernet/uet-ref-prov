@@ -1342,8 +1342,7 @@ static int uet_pds_send_ctrl_pkt(struct uet_instance *uet,
 	switch (ctrl_type) {
 	case UET_PDS_CTRL_TYPE_CLOSE:
 		ctrl_flags |= UET_PDS_CTRL_FLAGS_AR;
-		pdc->close_cmd_psn = pdc->next_psn;
-		cp_psn = pdc->close_cmd_psn;
+		cp_psn = pdc->next_psn;
 		break;
 	case UET_PDS_CTRL_TYPE_CLOSE_REQ:
 		ctrl_flags |= UET_PDS_CTRL_FLAGS_AR;
@@ -1469,6 +1468,7 @@ static int uet_pds_send_ctrl_pkt(struct uet_instance *uet,
 static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 				      struct uet_pdc *pdc)
 {
+	uint32_t close_psn;
 	int rc;
 
 	/* bail if the close command has already been sent */
@@ -1513,6 +1513,7 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 	}
 
 	/* all messages and packets have drained, send the close command */
+	close_psn = pdc->next_psn;
 	rc = uet_pds_send_ctrl_pkt(uet, pdc, UET_PDS_CTRL_TYPE_CLOSE, 0, NULL);
 	if (rc != 0) {
 		UET_PDS_ERR("PDC %u failed to send close command",
@@ -1523,6 +1524,7 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 
 	/* close command packet has been sent */
 	pdc->close_started = true;
+	pdc->close_cmd_psn = close_psn;
 
 	/* transition to the CLOSING state */
 	pdc->state = PDC_STATE_CLOSING;
@@ -3979,6 +3981,7 @@ static int uet_pds_process_close_command_cp(struct uet_instance *uet,
 		    pp->pds_spdcid, pp->pds_dpdcid);
 
 	pdc->close_started = true;
+	pdc->close_cmd_psn = pp->pds_psn;
 
 	/* target transitions to CLOSING state */
 	pdc->state = PDC_STATE_CLOSING;
@@ -4203,7 +4206,7 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	 * If a close command was already received and a packet with a higher
 	 * PSN is received, transmit a NACK with UET_CLOSING.
 	 */
-	if (pdc->state == PDC_STATE_CLOSING) {
+	if (!pdc->is_initiator && (pdc->state == PDC_STATE_CLOSING)) {
 		if (UET_PDS_PSN_AFTER(pdc_pkt->pkt_pp.pds_psn,
 				      pdc->close_cmd_psn)) {
 			UET_PDS_WARN("PDC %u is CLOSING, received PSN %u "
@@ -4228,6 +4231,17 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		 * needs to be freed by this caller.
 		 */
 		rc = -EEXIST;
+		goto exit_err;
+	}
+
+	/*
+	 * After the Close Command is sent, the initiator only re-ACKs
+	 * duplicate return-direction packets; a new PSN is dropped.
+	 */
+	if (pdc->is_initiator && (pdc->state == PDC_STATE_CLOSING)) {
+		UET_PDS_WARN("PDC %u is CLOSING, drop new return PSN %u",
+			     pdc->pdc_id, pdc_pkt->pkt_pp.pds_psn);
+		rc = -EINVAL;
 		goto exit_err;
 	}
 
