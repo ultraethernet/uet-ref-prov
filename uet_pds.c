@@ -3482,6 +3482,21 @@ static int uet_pds_reestablish_start_psn(struct uet_instance *uet,
 	return 0;
 }
 
+/* check the packet source FA matches the peer FA recorded on the PDC */
+static bool uet_pds_check_pkt_src(struct uet_pdc *pdc,
+				  const struct uet_parsed_pkt *pp)
+{
+	if (pp->is_ipv6 != pdc->is_ipv6)
+		return false;
+
+	if (pp->is_ipv6) {
+		struct ipv6hdr *ipv6 = (struct ipv6hdr *)pp->ip;
+		return (memcmp(pdc->dst_addr.v6, &ipv6->saddr, 16) == 0);
+	}
+
+	return (pdc->dst_addr.v4 == ntohl(((struct iphdr *)pp->ip)->saddr));
+}
+
 static int uet_pds_process_nack(struct uet_instance *uet,
 				struct uet_parsed_pkt *pp)
 {
@@ -3495,6 +3510,12 @@ static int uet_pds_process_nack(struct uet_instance *uet,
 		UET_PDS_WARN("NACK for unknown/invalid PDC %u (nack_code=0x%x)",
 			     pp->pds_dpdcid, pp->pds_nack_code);
 		return rc;
+	}
+
+	if (!uet_pds_check_pkt_src(pdc, pp)) {
+		UET_PDS_WARN("PDC %u NACK source FA mismatch (code=0x%x)",
+			     pdc->pdc_id, pp->pds_nack_code);
+		return -EINVAL;
 	}
 
 	UET_PDS_WARN("PDC %u received NACK (code=0x%x psn=%u spdcid=%u)",
@@ -3605,6 +3626,12 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
 	if (rc != 0) {
 		return rc;
+	}
+
+	if (!uet_pds_check_pkt_src(pdc, pp)) {
+		UET_PDS_WARN("invalid PDC %u (ACK source FA mismatch)",
+			     pdc->pdc_id);
+		return -EINVAL;
 	}
 
 	if ((pdc->state != PDC_STATE_SYN) &&
@@ -4029,7 +4056,7 @@ static int uet_pds_process_control(struct uet_instance *uet,
 				   int pkt_len)
 {
 	struct uet_pdc *pdc;
-	uint32_t expected_psn;
+	int nack_code;
 	int rc;
 
 	/* find the target PDC */
@@ -4037,16 +4064,25 @@ static int uet_pds_process_control(struct uet_instance *uet,
 	if (rc != 0) {
 		UET_PDS_WARN("CP type %d for unknown PDC %u",
 			     pp->pds_ctrl_type, pp->pds_dpdcid);
-		uet_pds_tx_nack(uet, NULL, pp, UET_NACK_INV_DPDCID, 0);
-		return rc;
+		pdc = NULL;
+		nack_code = UET_NACK_INV_DPDCID;
+		goto exit_err;
+	}
+
+	/* verify the source FA matches the PDC peer */
+	if (!uet_pds_check_pkt_src(pdc, pp)) {
+		UET_PDS_WARN("PDC %u CP type %d source FA mismatch",
+			     pdc->pdc_id, pp->pds_ctrl_type);
+		nack_code = UET_NACK_PDC_HDR_MISMATCH;
+		goto exit_err;
 	}
 
 	/* verify dpdcid matches spdcid */
 	if (pdc->dpdcid != pp->pds_spdcid) {
 		UET_PDS_WARN("PDC %u dpdcid mismatch (%u != %u)",
 			     pdc->pdc_id, pdc->dpdcid, pp->pds_spdcid);
-		uet_pds_tx_nack(uet, pdc, pp, UET_NACK_PDC_HDR_MISMATCH, 0);
-		return -EINVAL;
+		nack_code = UET_NACK_PDC_HDR_MISMATCH;
+		goto exit_err;
 	}
 
 	/* verify the PDC is in the correct state */
@@ -4055,8 +4091,8 @@ static int uet_pds_process_control(struct uet_instance *uet,
 		UET_PDS_WARN("PDC %u not in ESTABLISHED or CLOSING "
 			     "(state=%d)",
 			     pdc->pdc_id, pdc->state);
-		uet_pds_tx_nack(uet, pdc, pp, UET_NACK_UNEXP_EVENT, 0);
-		return -EINVAL;
+		nack_code = UET_NACK_UNEXP_EVENT;
+		goto exit_err;
 	}
 
 	switch (pp->pds_ctrl_type) {
@@ -4076,18 +4112,22 @@ static int uet_pds_process_control(struct uet_instance *uet,
 	case UET_PDS_CTRL_TYPE_CREDIT:
 	case UET_PDS_CTRL_TYPE_CREDIT_REQ:
 	case UET_PDS_CTRL_TYPE_NEGOTIATION:
-		UET_PDS_ERR("Control type %d not yet supported",
-			     pp->pds_ctrl_type);
-		uet_pds_tx_nack(uet, NULL, pp, UET_NACK_UNEXP_EVENT, 0);
-		return -EINVAL;
+		UET_PDS_ERR("PDC %u control type %d not yet supported",
+			    pdc->pdc_id, pp->pds_ctrl_type);
+		nack_code = UET_NACK_UNEXP_EVENT;
+		goto exit_err;
 
 	default:
-		UET_PDS_ERR("Unknown control type %d", pp->pds_ctrl_type);
-		uet_pds_tx_nack(uet, NULL, pp, UET_NACK_UNEXP_EVENT, 0);
-		return -EINVAL;
+		UET_PDS_ERR("PDC %u unknown control type %d",
+			    pdc->pdc_id, pp->pds_ctrl_type);
+		nack_code = UET_NACK_UNEXP_EVENT;
+		goto exit_err;
 	}
 
-	return 0;
+exit_err:
+	if (pp->pds_flags & UET_PDS_CTRL_FLAGS_AR)
+		uet_pds_tx_nack(uet, pdc, pp, nack_code, 0);
+	return -EINVAL;
 }
 
 static int uet_pds_process_request(struct uet_instance *uet,
@@ -4137,6 +4177,15 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		uet_pds_tx_nack(uet, NULL, &pdc_pkt->pkt_pp,
 				UET_NACK_INV_DPDCID, 0);
 		rc = -ENODEV;
+		goto exit_err;
+	}
+
+	if (!uet_pds_check_pkt_src(pdc, &pdc_pkt->pkt_pp)) {
+		UET_PDS_WARN("invalid PDC %u (source FA mismatch)",
+			     pdc->pdc_id);
+		uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp,
+				UET_NACK_PDC_HDR_MISMATCH, 0);
+		rc = -EINVAL;
 		goto exit_err;
 	}
 
