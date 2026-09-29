@@ -1475,17 +1475,9 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 	if (pdc->close_requested && pdc->close_started)
 		return 0;
 
-	UET_PDS_DBG("PDC %u sending close command", pdc->pdc_id);
-
 	if (!pdc->is_initiator) {
 		UET_PDS_ERR("PDC %u is not an initiator, cannot close",
 			    pdc->pdc_id);
-		return -EINVAL;
-	}
-
-	if (pdc->state != PDC_STATE_ESTABLISHED) {
-		UET_PDS_DBG("PDC %u not established (state %d), skip close",
-			    pdc->pdc_id, pdc->state);
 		return -EINVAL;
 	}
 
@@ -1510,6 +1502,16 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 		return -EAGAIN;
 	}
 
+	/*
+	 * The PDC is in the SYN state and the target PDCID is not available,
+	 * so a Close Command cannot be sent. Therefore, the PDC is closed
+	 * directly.
+	 */
+	if (pdc->state == PDC_STATE_SYN) {
+		uet_pdsm_free_pdc(pdc);
+		return 0;
+	}
+
 	/* all messages and packets have drained, send the close command */
 	rc = uet_pds_send_ctrl_pkt(uet, pdc, UET_PDS_CTRL_TYPE_CLOSE, 0, NULL);
 	if (rc != 0) {
@@ -1517,6 +1519,7 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 			    pdc->pdc_id);
 		return rc;
 	}
+	UET_PDS_DBG("PDC %u sending close command", pdc->pdc_id);
 
 	/* close command packet has been sent */
 	pdc->close_started = true;
@@ -3402,7 +3405,6 @@ static void uet_pds_close_pdc_in_error(struct uet_instance *uet,
 {
 	struct uet_pdc_pkt *pdc_pkt;
 	struct dlist_entry *tmp;
-	int rc;
 
 	UET_PDS_ERR("PDC %u closing in error", pdc->pdc_id);
 	pds_state.pdc_close_in_err_cnt++;
@@ -3519,6 +3521,13 @@ static int uet_pds_process_nack(struct uet_instance *uet,
 		UET_PDS_WARN("Invalid NACK PSN %u on PDC %u",
 			     pp->pds_psn, pdc->pdc_id);
 		return -EINVAL;
+	}
+
+	if ((pdc->state == PDC_STATE_SYN) && (pp->pds_spdcid != 0)) {
+		UET_PDS_DBG("PDC %u transitioned to the ESTABLISHED state",
+			    pdc->pdc_id);
+		pdc->state  = PDC_STATE_ESTABLISHED;
+		pdc->dpdcid = pp->pds_spdcid;
 	}
 
 	if (nack_action == UET_NACK_ACTION_CLOSE) {
