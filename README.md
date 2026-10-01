@@ -1,17 +1,21 @@
+# UET Reference Provider
 
-# UEC Reference Provider (libfabric)
+This repository provides a reference implementation of the UET transport
+specifications. The transport engine can be built for the standalone test
+application and consumed through libfabric or the experimental UET Verbs
+path. It includes:
 
-This repository provides a reference implementation of the UEC transport
-specifications including:
 - Semantic Sublayer (SES)
 - Packet Delivery Sublayer (PDS) - Reliability and Congestion Management
 - Transport Security Sublayer (TSS) - Encryption and Integrity
 
-See SDR4001 and the UEC Libfabric Mapping Specification for additional details.
+See SDR4001, the UEC Libfabric Mapping Specification, and the UET Verbs
+Specification for additional details.
 
 ## Goals
 
-- Reference implementation of the libfabric mapping, semantic, packet delivery, and security layers
+- Reference implementation of the semantic, packet delivery, and security
+  layers used by the libfabric and UET Verbs mappings
 - Investigate lower-level interfaces in libfabric (memory management)
 - Provide a framework to define Linux kernel interfaces (i.e., netlink)
 - Development/integration vehicle for higher level libraries (i.e, xCCL)
@@ -29,6 +33,23 @@ SES, PDS, TSS, and NIC.
 - PDS interfaces with TSS via PDS-TSS APIs (see uet_sec.h)
 - The NIC shim interface is accessed via a set of abstracted APIs (see
 uet_nic.h).
+
+The application-facing adapters live in separate repositories. This table
+shows where the libraries fit; it does not imply that libfabric and Verbs use
+the same API.
+
+| Layer | libfabric path | UET Verbs path |
+| --- | --- | --- |
+| Example application | `fi_pingpong` | `ibv_ru_pingpong`, `ibv_ru_rma` |
+| Standard userspace API | `libfabric.so` | `libibverbs.so` |
+| UET adapter | `libuet-fi.so` from `uet-libfabric` | `libuprot-rdmav57.so` from `uet-rdma-core` |
+| Reference transport built here | `libuet_fabric.so`, or a backend-specific build such as `libvppuet.so` | `libuet_verbs.so`, or `libuet_verbs_vpp.so` for VPP |
+| VPP client, when selected | `libuet_vpp_client.so` | `libuet_vpp_client.so` |
+| VPP dataplane, when selected | `uet_plugin.so` | `uet_plugin.so` |
+
+The `-fi` suffix identifies the libfabric-facing provider; `fi` is short for
+Fabric Interface. Libfabric itself is an OpenFabrics API and is not specific
+to Ultra Ethernet.
 
 The current SES implementation supports a subset of the functionality required
 for:
@@ -50,9 +71,10 @@ layers. The second PDS implementation is fully featured transport based on the
 UET PDS Specification. It supports the RUD, ROD, RUDI, and UUD delivery modes
 (see [Delivery Modes](#delivery-modes) below).
 
-There are currently two implementations of the NIC shim interface APIs:
+There are currently three implementations of the NIC shim interface APIs:
 - Raw Ethernet socket
 - AF_XDP
+- VPP
 
 Testing is performed using a simple top-level program that performs ping-pong
 message data transfer operations between a client and a server (see `uet.c`).
@@ -195,6 +217,69 @@ over the interface.
        ./uet_xdp client 192.168.1.1
 ```
 
+### vpp
+
+The experimental `vpp` NIC shim connects the existing UET transport to the
+out-of-tree VPP host-dataplane plugin and `libuet_vpp_client`. VPP owns packet
+I/O, IPv4/IPv6 FIB lookup, multipath, adjacency resolution and interface
+output; UET transport termination remains in the `uet_vpp` process.
+
+Build the separate VPP plugin/client contribution first, then build the shim:
+
+```sh
+cmake -S vpp-plugin -B build/vpp-plugin \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/opt/vpp \
+  -DVPP_DIR=/opt/vpp/lib/x86_64-linux-gnu/cmake/vpp
+cmake --build build/vpp-plugin
+
+make vpp \
+  LIBFABRIC=/path/to/libfabric \
+  VPP_PLUGIN_BUILD=build/vpp-plugin
+```
+
+The dedicated binary defaults to `UET_NIC_SHIM=vpp`. Configure one VPP-owned
+application segment per process and provide its name, DMA socket, local IP
+address and optional MTU through the variables below. The plugin architecture,
+VPP CLI and manual low-level tests are documented in
+[`vpp-plugin/README.md`](vpp-plugin/README.md).
+
+#### UET Verbs through uprot
+
+The same VPP NIC shim can be exposed to applications using the experimental
+UET Verbs API through the `uprot` libibverbs provider. Build a separate shared
+library so that the normal `libuet_verbs.so` keeps its existing NIC backend and
+does not acquire a VPP runtime dependency:
+
+```sh
+make vpp-verbs \
+  LIBFABRIC="$PWD/libfabric_headers" \
+  VPP_PLUGIN_BUILD=build/vpp-plugin
+```
+
+The common Makefile still requires its `LIBFABRIC` argument, but this target
+uses the bundled compatibility headers and does not link `libfabric.so`. It
+produces `libuet_verbs_vpp.so`. Select that library while configuring
+`uet-rdma-core`:
+
+```sh
+UET_REF_PROV_PATH=/path/to/uet-ref-prov \
+cmake -S /path/to/uet-rdma-core -B /path/to/uet-rdma-core/build \
+  -DUET_REF_PROV_LIB=/path/to/uet-ref-prov/libuet_verbs_vpp.so
+```
+
+Applications continue to use the standard `libibverbs` API. At runtime,
+`libibverbs` loads the `uprot` provider, which calls `libuet_verbs_vpp.so`; that
+library sends and receives packets through `libuet_vpp_client.so` and the VPP
+plugin. Configure the VPP segment and interface with the same `UET_VPP_*`
+variables used by the standalone VPP build.
+
+For a reproducible AF_PACKET test using two network namespaces, see
+[`vpp-plugin/GETTING_STARTED_VERBS.md`](vpp-plugin/GETTING_STARTED_VERBS.md).
+The guide separates compatibility requirements from the exact configuration
+used for validation: its Linux and VPP versions are reference points, not
+general minimum-version requirements.
+
 ### CC Tester
 
 Simulation parameters (link speed, RTT, queue size, drop thresholds etc.) can be set by modifying
@@ -211,7 +296,14 @@ Replace `2` with the desired number of senders.
 
 - **LD_LIBRARY_PATH** - Needed for dynamic linking to the `libfabric` and `libuet` libraries.
 - **UET_IFNAME** - The ifname of the interface to attach to.
-- **UET_NIC_SHIM** - [ `rawsock` | `xdp` ]
+- **UET_NIC_SHIM** - [ `rawsock` | `xdp` | `vpp` ] (`vpp` is available in
+  the dedicated `make vpp` build).
+- **UET_VPP_SEGMENT** - VPP-owned application segment used by the `vpp` shim.
+- **UET_VPP_DMA_SOCKET** - Unix socket used to receive the authorized VPP
+  buffer-pool mapping.
+- **UET_VPP_IPV4_ADDR** / **UET_VPP_IPV6_ADDR** - One or both local addresses
+  exposed by the `vpp` shim.
+- **UET_VPP_MTU** - IP MTU exposed by the `vpp` shim (default=`1500`).
 - **UET_PDS** - [ `sng` | `pds` ] (default=`sng` stop-n-go)
 - **UET_PDS_PER_PKT_ACK_ENB** - [ `0` | `1` ] (default=`0`)
 - **UET_PDS_ACK_TYPE** - [ `ack` | `ack_cc` | `ack_ccx` ] (default=`ack`)

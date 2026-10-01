@@ -7,10 +7,13 @@ It uses VPP's normal device and interface graphs and has no dependency on a
 specific NIC driver. Hardware-specific validation is maintained separately
 from the driver-independent plugin sources and tests.
 
-The plugin and `libuet_vpp_client` are self-contained in this directory. A
-separate, follow-on NIC-shim contribution connects the existing UET transport
-to the client API; application-facing libfabric integration belongs in the
-dedicated `uet-libfabric` repository.
+The plugin and `libuet_vpp_client` are self-contained in this directory. The
+NIC shim connects the existing UET transport to the client API. Applications
+can reach that transport through either the libfabric integration maintained
+in the dedicated `uet-libfabric` repository or the experimental UET Verbs
+`uprot` provider maintained in `uet-rdma-core`. See the
+[`UET Verbs getting-started guide`](GETTING_STARTED_VERBS.md) for an end-to-end
+AF_PACKET test.
 
 ## Why VPP
 
