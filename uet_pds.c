@@ -77,6 +77,13 @@
 #define UET_DEFAULT_CLOSE_REQ_TIME_MS 1000
 
 /*
+ * PDS_Clear_Time. When an ACK requests a clear (REQ_CLR), CLEAR_PSN is carried
+ * by the next PDS Request. If no request is sent within PDS_Clear_Time, a
+ * Clear Command CP is sent instead.
+ */
+#define UET_DEFAULT_CLEAR_TIME_MS 1
+
+/*
  * PSN-range based close. An encrypted PDC MUST close once its PSN reaches
  * Start_PSN + 2^31 (and then re-establishes on the next send). This bounds
  * how far a single Start_PSN's anti-replay window travels. This is always
@@ -192,6 +199,7 @@ struct uet_pdc {
 	uint16_t             syn_offset; /* initiator SYN offset until ACK */
 	uint32_t             start_psn; /* PDC start PSN (random base) */
 	time_t               pending_time; /* PENDING state entry time */
+	time_t               clear_pending_time; /* PDS_Clear_Timer, 0 = none */
 	uint32_t             next_psn; /* next Tx pkt seq number */
 	struct bitmap       *tx_bm;
 	uint32_t             tx_bm_base_psn; /* start PSN for initiator MPR */
@@ -247,6 +255,8 @@ static int pds_pkt_drop_thresh = UET_PKT_DROP_THRESH;
 static int pds_new_pdc_time_ms = UET_DEFAULT_NEW_PDC_TIME_MS;
 /* Close_REQ_Time, how long target waits for the initiator's Close Command CP */
 static int pds_close_req_time_ms = UET_DEFAULT_CLOSE_REQ_TIME_MS;
+/* PDS_Clear_Time, how long a clear waits for a request to carry CLEAR_PSN */
+static int pds_clear_time_ms = UET_DEFAULT_CLEAR_TIME_MS;
 /* Secure PDC establishment method. Default is EXPECTED_0RTT_START. The
  * environment variable UET_PDS_PSN_METHOD=1rtt selects RANDOM_1RTT_START,
  * where the target ignores the initiator's Start_PSN, mints its own, and
@@ -657,6 +667,7 @@ static void uet_init_pdc(struct uet_pdc *pdc,
 	pdc->close_req_time = 0;
 
 	pdc->pending_time = 0;
+	pdc->clear_pending_time = 0;
 
 	dlist_init(&pdc->tx_pkt_list_head);
 
@@ -2294,6 +2305,9 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	if (pdc->state == PDC_STATE_SYN)
 		pdc->syn_offset++;
 
+	/* clear_psn_offset in this request carries any pending clear */
+	pdc->clear_pending_time = 0;
+
 	/* the packet was sent successfully */
 	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET");
 
@@ -2548,6 +2562,23 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 					     "closing in error", pdc->pdc_id);
 				uet_pds_close_pdc_in_error(uet, pdc);
 				continue;
+			}
+		}
+
+		/*
+		 * No PDS Request carried CLEAR_PSN within PDS_Clear_Time,
+		 * send it in a Clear Command CP.
+		 */
+		if (pdc->clear_pending_time != 0) {
+			uet_gettime(&now);
+
+			if ((now - pdc->clear_pending_time) >
+			    pds_clear_time_ms) {
+				rc = uet_pds_send_ctrl_pkt(
+					uet, pdc, UET_PDS_CTRL_TYPE_CLEAR,
+					pdc->tx_bm_base_psn - 1, NULL);
+				if (rc == 0)
+					pdc->clear_pending_time = 0;
 			}
 		}
 
@@ -3777,20 +3808,12 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		return rc;
 
 	/*
-	 * If the UET_PDS_ACK_FLAGS_REQ_CLR flag was set on the ACK,
-	 * immediately send a PDS CLEAR control packet now.
-	 * Note: the UET spec only requires a standalone clear CP when no PDS
-	 * request is pending to carry clear_psn_offset
+	 * The ACK requests a clear. CLEAR_PSN is carried by the next PDS
+	 * Request, or by a Clear Command CP once PDS_Clear_Time expires.
 	 */
-	if (pdc->is_initiator &&
-	    (pp->pds_flags & UET_PDS_ACK_FLAGS_REQ_CLR)) {
-		rc = uet_pds_send_ctrl_pkt(uet, pdc, UET_PDS_CTRL_TYPE_CLEAR,
-				      pdc->tx_bm_base_psn - 1, NULL);
-		if ((rc != 0) && (rc != -EAGAIN)) {
-			UET_PDS_WARN("PDC %u failed to send clear cp (rc=%d)",
-				     pdc->pdc_id, rc);
-		}
-	}
+	if ((pp->pds_flags & UET_PDS_ACK_FLAGS_REQ_CLR) &&
+	    (pdc->clear_pending_time == 0))
+		uet_gettime(&pdc->clear_pending_time);
 
 	/*
 	 * Check if PDC has close_requested set and all messages have drained.
