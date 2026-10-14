@@ -1695,6 +1695,7 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 	int rc;
 	struct uet_ep *uet_ep;
 	struct uet_pds *pds;
+	bool msg_cmpl = false;
 
 	uet_ep = tx_desc->uet_ep;
 	pds = &uet_ep->uet_domain->uet->pds;
@@ -1711,13 +1712,9 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 					tx_desc->state = UET_TX_DESC_STATE_WAIT;
 					break;
 				}
-				pds->downcall.msg_cmpl_ind(
-					uet_ep, tx_desc->dst_addr_handle,
-					tx_desc->pds_mode, tx_desc->msg_id);
+				msg_cmpl = true;
 			} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc))
-				pds->downcall.msg_cmpl_ind(
-					uet_ep, tx_desc->dst_addr_handle,
-					tx_desc->pds_mode, tx_desc->msg_id);
+				msg_cmpl = true;
 			tx_desc->state = UET_TX_DESC_STATE_COMPLETE;
 		}
 		break;
@@ -1726,13 +1723,9 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 			if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
 				if (tx_desc->rx_desc->expected_rd_rsp)
 					break;
-				pds->downcall.msg_cmpl_ind(
-					uet_ep, tx_desc->dst_addr_handle,
-					tx_desc->pds_mode, tx_desc->msg_id);
+				msg_cmpl = true;
 			} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc))
-				pds->downcall.msg_cmpl_ind(
-					uet_ep, tx_desc->dst_addr_handle,
-					tx_desc->pds_mode, tx_desc->msg_id);
+				msg_cmpl = true;
 			tx_desc->state = UET_TX_DESC_STATE_COMPLETE;
 		}
 		break;
@@ -1742,13 +1735,20 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
 			if (tx_desc->rx_desc->expected_rd_rsp)
 				break;
-			pds->downcall.msg_cmpl_ind(
-				uet_ep, tx_desc->dst_addr_handle,
-				tx_desc->pds_mode, tx_desc->msg_id);
+			msg_cmpl = true;
 		} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc))
+			msg_cmpl = true;
+
+		/*
+		 * The retransmit restarts from SOM and maps the same msg_id
+		 * again, so PDS must release the old mapping first.
+		 */
+		if (msg_cmpl) {
 			pds->downcall.msg_cmpl_ind(
 				uet_ep, tx_desc->dst_addr_handle,
 				tx_desc->pds_mode, tx_desc->msg_id);
+			msg_cmpl = false;
+		}
 		rc = uet_retx_msg(tx_desc, tx_desc->delay_retx);
 		if (rc == FI_SUCCESS)
 			tx_desc->state = UET_TX_DESC_STATE_ACTIVE;
@@ -1773,34 +1773,32 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 	case UET_TX_DESC_STATE_ERR:
 		if (tx_desc->unack_pkts)
 			break;
-		if (tx_desc->remaining_bytes) {
-			if (!(tx_desc->desc_flags &
-			      UET_TX_DESC_FLAG_READ_RSP)) {
-				pds->downcall.msg_cmpl_ind(
-					uet_ep, tx_desc->dst_addr_handle,
-					tx_desc->pds_mode, tx_desc->msg_id);
-				tx_desc->remaining_bytes = 0;
-			}
-		}
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
 			if (tx_desc->rx_desc->expected_rd_rsp) {
 				uet_rx_desc_active_list_remove(
 					tx_desc->rx_desc);
 				tx_desc->rx_desc->expected_rd_rsp = 0;
 			}
-			pds->downcall.msg_cmpl_ind(
-				uet_ep, tx_desc->dst_addr_handle,
-				tx_desc->pds_mode, tx_desc->msg_id);
-		} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc))
-			pds->downcall.msg_cmpl_ind(
-				uet_ep, tx_desc->dst_addr_handle,
-				tx_desc->pds_mode, tx_desc->msg_id);
+			msg_cmpl = true;
+		} else if (uet_tx_desc_expects_amo_rsp_data(tx_desc)) {
+			msg_cmpl = true;
+		} else if (tx_desc->remaining_bytes &&
+			   !(tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP)) {
+			msg_cmpl = true;
+		}
+
+		if (tx_desc->remaining_bytes)
+			tx_desc->remaining_bytes = 0;
 
 		tx_desc->state = UET_TX_DESC_STATE_ERR_COMPLETE;
 		break;
 	default:
 		break;
 	}
+
+	if (msg_cmpl)
+		pds->downcall.msg_cmpl_ind(uet_ep, tx_desc->dst_addr_handle,
+					   tx_desc->pds_mode, tx_desc->msg_id);
 }
 
 /* post error entry in tx completion queue */
