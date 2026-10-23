@@ -29,6 +29,7 @@
 #include "uet_ref_hw.h"
 
 #include "uet_ref.h"
+#include "uet_ref_ring_cons.h"
 
 static const struct verbs_match_ent hca_table[] = {
 	VERBS_DRIVER_ID(RDMA_DRIVER_UET_REF),
@@ -1396,15 +1397,21 @@ static void uet_ref_cq_release(struct uet_ref_cq *cq,
 
 	for (i = 0; i < cq->nqps; i++) {
 		struct uet_ref_qp *qp = cq->qps[i];
+		struct uet_ref_ring *ring;
 
 		if (qp->vqp.qp.qp_num != c->qpn)
 			continue;
 
 		if ((c->opcode == UET_REF_HW_OP_RECV) ||
 		    (c->opcode == UET_REF_HW_OP_RECV_RDMA_IMM))
-			qp->rq.cons = c->ring_cons;
+			ring = &qp->rq;
 		else
-			qp->sq.cons = c->ring_cons;
+			ring = &qp->sq;
+
+		/* An older RU completion must not revoke already returned
+		 * credits and make a non-full SQ/RQ appear full.
+		 */
+		ring->cons = uet_ref_ring_cons_advance(ring->cons, c->ring_cons);
 
 		return;
 	}
