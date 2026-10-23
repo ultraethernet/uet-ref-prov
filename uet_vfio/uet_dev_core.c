@@ -123,6 +123,7 @@ struct uet_dev *uet_dev_create(const struct uet_dev_backend *backend)
 	if (backend != NULL)
 		dev->backend = *backend;
 
+	dev->l2_fd = -1;
 	dev->state = UET_DEV_STATE_INIT;
 	clock_gettime(CLOCK_MONOTONIC, &dev->started);
 
@@ -215,7 +216,9 @@ struct uet_dev *uet_dev_create(const struct uet_dev_backend *backend)
 		goto err;
 	}
 
-	uet_dev_l2_open(dev);
+	rc = uet_dev_l2_open(dev);
+	if (rc != 0)
+		goto err;
 
 	rc = pthread_create(&dev->progress_thread, NULL,
 			    uet_dev_progress_loop, dev);

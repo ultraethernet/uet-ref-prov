@@ -16,7 +16,7 @@
 
 #include "uet_dev_priv.h"
 
-void uet_dev_l2_open(struct uet_dev *dev);
+int uet_dev_l2_open(struct uet_dev *dev);
 void uet_dev_l2_close(struct uet_dev *dev);
 void uet_dev_l2_poll(struct uet_dev *dev);
 void uet_dev_tx_drain_locked(struct uet_dev *dev);

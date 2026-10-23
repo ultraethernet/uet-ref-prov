@@ -288,10 +288,10 @@ UET_DEV_BIN=uet_dev
 #     make dev LIBVFIO_USER=/usr/local LIBVFIO_USER_LIB=/usr/local/lib
 #     make dev LIBVFIO_USER_INC=... LIBVFIO_USER_LIB=...
 #
-# Only "make dev" needs any of this so this search does not run for the
-# other build targets.
+# Only the device-model targets need this search; skip it for other
+# build targets.
 
-ifeq ($(filter dev,$(MAKECMDGOALS)),dev)
+ifneq ($(filter dev dev-vpp,$(MAKECMDGOALS)),)
 ifndef LIBVFIO_USER
 LIBVFIO_USER := $(shell \
 	current_dir=$(CURDIR); \
@@ -327,7 +327,7 @@ UET_DEV_OBJS=$(patsubst $(UET_DEV_DIR)/%.c,$(UET_DEV_OBJ_DIR)/%.o,$(UET_DEV_SRCS
 $(UET_DEV_OBJ_DIR)/%.o: $(UET_DEV_DIR)/%.c $(HDRS) $(UET_DEV_HDRS)
 	@mkdir -p $(UET_DEV_OBJ_DIR)
 	@echo 'Building device model file: $<'
-	@$(CC) $(CFLAGS) -DENABLE_VERBS=1 -I$(UET_DEV_DIR) $(INCS) $(LF_HDRS) \
+	@$(CC) $(CFLAGS) -D_GNU_SOURCE -DENABLE_VERBS=1 -I$(UET_DEV_DIR) $(INCS) $(LF_HDRS) \
 	       -I$(LIBVFIO_USER_INC) -c -o $@ $<
 
 # vfio-user device model
@@ -339,6 +339,20 @@ $(UET_DEV_BIN): $(VERBS_LIB) $(UET_DEV_OBJS)
 	       -Wl,-rpath,$(LIBVFIO_USER_LIB) $(LDFLAGS) $(LF_LIBS)
 
 dev: $(UET_DEV_BIN)
+
+# PCIe/vfio-user frontend with the reference transport using the VPP NIC shim.
+# Device-model objects are shared: their ABI and code do not depend on the NIC.
+UET_DEV_VPP_BIN=uet_dev_vpp
+
+$(UET_DEV_VPP_BIN): $(VPP_VERBS_LIB) $(UET_DEV_OBJS)
+	@echo 'Building VPP vfio-user device model: $@'
+	@$(CC) $(UET_DEV_OBJS) \
+	       -o $@ -L. -l$(VPP_VERBS_LIBNAME) \
+	       -L$(VPP_PLUGIN_BUILD)/lib -luet_vpp_client \
+	       -L$(LIBVFIO_USER_LIB) -lvfio-user \
+	       -Wl,-rpath,$(LIBVFIO_USER_LIB) $(LDFLAGS) $(LF_LIBS)
+
+dev-vpp: $(UET_DEV_VPP_BIN)
 
 clean:
 	@rm -rf $(FABRIC_LIB_OBJ_DIR) $(FABRIC_LIB) \
@@ -352,6 +366,6 @@ clean:
 		$(VPP_OBJ_DIR) $(VPP_BIN) \
 		$(VPP_VERBS_LIB_OBJ_DIR) $(VPP_VERBS_LIB) \
 		$(CC_SIM_OBJ_DIR) $(CC_SIM_BIN) \
-		$(UET_DEV_OBJ_DIR) $(UET_DEV_BIN)
+		$(UET_DEV_OBJ_DIR) $(UET_DEV_BIN) $(UET_DEV_VPP_BIN)
 
-.PHONY: all xdp vpp vpp-verbs strict-core cc_sim dev clean
+.PHONY: all xdp vpp vpp-verbs strict-core cc_sim dev dev-vpp clean
