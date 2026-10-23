@@ -88,6 +88,7 @@
 #define UET_DEV_REG_NIC_SHIM		0x048
 #define UET_DEV_NIC_SHIM_RAWSOCK	0
 #define UET_DEV_NIC_SHIM_XDP		1
+#define UET_DEV_NIC_SHIM_VPP		2
 
 #define UET_DEV_REG_MAX_PAYLOAD		0x04c
 #define UET_DEV_REG_PORT_PROTO		0x050	/* udp port 15:0, proto 23:16 */

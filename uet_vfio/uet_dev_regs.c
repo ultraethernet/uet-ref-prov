@@ -56,8 +56,13 @@ void uet_dev_read_config(struct uet_dev *dev)
 			dev->sec_mode = UET_DEV_SEC_MODE_SERVER;
 	}
 
-	dev->nic_shim = ((shim != NULL) && (strcmp(shim, "xdp") == 0))
-		? UET_DEV_NIC_SHIM_XDP : UET_DEV_NIC_SHIM_RAWSOCK;
+	dev->nic_shim = UET_DEV_NIC_SHIM_RAWSOCK;
+	if (shim != NULL) {
+		if (strcmp(shim, "xdp") == 0)
+			dev->nic_shim = UET_DEV_NIC_SHIM_XDP;
+		else if (strcmp(shim, "vpp") == 0)
+			dev->nic_shim = UET_DEV_NIC_SHIM_VPP;
+	}
 
 	/* A starting value only. Once the domain exists this is replaced
 	 * with what the library actually uses.

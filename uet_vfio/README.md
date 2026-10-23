@@ -55,6 +55,10 @@ Everything outside `uet_dev_vfio.c` is free of libvfio-user symbols, so the
 device's behaviour can be reasoned about, and in principle driven, without
 the protocol.
 
+For a VPP packet backend, see the optional
+[`dev-vpp` setup](../vpp-plugin/GETTING_STARTED_VFIO.md). It keeps the reference
+transport in the model and connects ordinary guest Ethernet to Linux separately.
+
 ## Building
 
 ### The model

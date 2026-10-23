@@ -70,7 +70,7 @@ check:
 $(SO): uet_ref.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-uet_ref.o: uet_ref.c uet_ref.h uet_ref_hw.h $(ABI_DIR)/uet_ref-abi.h
+uet_ref.o: uet_ref.c uet_ref.h uet_ref_hw.h uet_ref_ring_cons.h $(ABI_DIR)/uet_ref-abi.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 # A stable name to preload. The versioned one records which rdma-core ABI
