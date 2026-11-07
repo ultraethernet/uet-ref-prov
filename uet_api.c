@@ -2114,6 +2114,10 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 {
 	struct dlist_entry *item;
 	struct uet_pds *pds = &uet_ep->uet_domain->uet->pds;
+	struct uet_nic *nic = UET_NIC(uet_ep->uet_domain->uet);
+
+	uet_nic_ep_unregister(nic, uet_ep->nic_ep_context);
+	uet_ep->nic_ep_context = NULL;
 
 	uet_rx_msg_hash_finalize(uet_ep);
 	uet_tag_initiator_hash_finalize(uet_ep);
@@ -2255,8 +2259,8 @@ static void uet_finalize_core(struct uet_instance *uet)
 	uet_sec_finalize();
 	uet_ep_hash_finalize(uet);
 	imp_shim_finalize();
-	uet_nic_finalize(UET_NIC(uet));
 	uet_domain_free_all(uet);
+	uet_nic_finalize(UET_NIC(uet));
 	uet->pds.downcall.finalize(uet);
 }
 
@@ -7006,6 +7010,12 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 	new_info->src_addrlen = sizeof(struct uet_addr);
 	new_info->src_addr = src_addr;
 
+	rc = uet_nic_configure_info(UET_NIC(uet), new_info);
+	if (rc != FI_SUCCESS) {
+		UET_API_ERR("uet_nic_configure_info");
+		goto err_return;
+	}
+
 	new_info->nic = nic;
 
 	*info = new_info;
@@ -7316,6 +7326,12 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->context = context;
 	uet_ep->send_cq.cq_state = UET_CQ_DOWN;
 	uet_ep->recv_cq.cq_state = UET_CQ_DOWN;
+	rc = uet_nic_ep_register(UET_NIC(uet_dom->uet), uet_ep,
+				 &uet_ep->nic_ep_context);
+	if (rc != FI_SUCCESS) {
+		UET_API_ERR("uet_nic_ep_register");
+		goto err_exit;
+	}
 
 	rc = uet_ep_hash_insert(uet_ep, !ENABLE_VERBS);
 	if (rc != FI_SUCCESS) {
@@ -7350,6 +7366,9 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 
 err_exit:
 	if (uet_ep) {
+		uet_nic_ep_unregister(UET_NIC(uet_dom->uet),
+				      uet_ep->nic_ep_context);
+		uet_ep->nic_ep_context = NULL;
 		uet_desc_free(uet_ep);
 		if (data_lock_initialized)
 			pthread_mutex_destroy(&uet_ep->data_lock);

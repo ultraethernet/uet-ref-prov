@@ -195,6 +195,33 @@ over the interface.
        ./uet_xdp client 192.168.1.1
 ```
 
+### vpp
+
+The experimental `vpp` NIC shim connects the existing UET transport to the
+out-of-tree VPP host-dataplane plugin and `libuet_vpp_client`. VPP owns packet
+I/O, IPv4/IPv6 FIB lookup, multipath, adjacency resolution and interface
+output; UET transport termination remains in the `uet_vpp` process.
+
+Build the separate VPP plugin/client contribution first, then build the shim:
+
+```sh
+cmake -S vpp-plugin -B build/vpp-plugin \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/opt/vpp \
+  -DVPP_DIR=/opt/vpp/lib/x86_64-linux-gnu/cmake/vpp
+cmake --build build/vpp-plugin
+
+make vpp \
+  LIBFABRIC=/path/to/libfabric \
+  VPP_PLUGIN_BUILD=build/vpp-plugin
+```
+
+The dedicated binary defaults to `UET_NIC_SHIM=vpp`. Configure one VPP-owned
+application segment per process and provide its name, DMA socket, local IP
+address and optional MTU through the variables below. The plugin architecture,
+VPP CLI and manual low-level tests are documented in
+[`vpp-plugin/README.md`](vpp-plugin/README.md).
+
 ### CC Tester
 
 Simulation parameters (link speed, RTT, queue size, drop thresholds etc.) can be set by modifying
@@ -211,7 +238,14 @@ Replace `2` with the desired number of senders.
 
 - **LD_LIBRARY_PATH** - Needed for dynamic linking to the `libfabric` and `libuet` libraries.
 - **UET_IFNAME** - The ifname of the interface to attach to.
-- **UET_NIC_SHIM** - [ `rawsock` | `xdp` ]
+- **UET_NIC_SHIM** - [ `rawsock` | `xdp` | `vpp` ] (`vpp` is available in
+  the dedicated `make vpp` build).
+- **UET_VPP_SEGMENT** - VPP-owned application segment used by the `vpp` shim.
+- **UET_VPP_DMA_SOCKET** - Unix socket used to receive the authorized VPP
+  buffer-pool mapping.
+- **UET_VPP_IPV4_ADDR** / **UET_VPP_IPV6_ADDR** - One or both local addresses
+  exposed by the `vpp` shim.
+- **UET_VPP_MTU** - IP MTU exposed by the `vpp` shim (default=`1500`).
 - **UET_PDS** - [ `sng` | `pds` ] (default=`sng` stop-n-go)
 - **UET_PDS_PER_PKT_ACK_ENB** - [ `0` | `1` ] (default=`0`)
 - **UET_PDS_ACK_TYPE** - [ `ack` | `ack_cc` | `ack_ccx` ] (default=`ack`)
