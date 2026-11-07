@@ -14,6 +14,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -165,29 +166,45 @@ out:
 	return ok;
 }
 
-/* open the L2 socket (independent from uet-ref-prov) */
-void uet_dev_l2_open(struct uet_dev *dev)
+/* The transport and guest netdev may use different host interfaces. With
+ * VPP, this socket can attach to a veth peer of the Linux control gateway.
+ */
+int uet_dev_l2_open(struct uet_dev *dev)
 {
+	const char *ifname = getenv("UET_DEV_L2_IFNAME");
 	struct sockaddr_ll sll;
-	int fd;
+	int fd, error;
 
 	dev->l2_fd = -1;
+	if (ifname == NULL)
+		ifname = dev->ifname;
 
-	if (dev->ifname[0] == '\0')
-		return;
+	/* A VPP channel name is not a Linux netdev. Require its L2 endpoint
+	 * explicitly so a typo cannot send control traffic elsewhere.
+	 */
+	if (dev->nic_shim == UET_DEV_NIC_SHIM_VPP &&
+	    (getenv("UET_DEV_L2_IFNAME") == NULL || ifname[0] == '\0')) {
+		fprintf(stderr,
+			"uet_dev: VPP requires UET_DEV_L2_IFNAME (Linux guest L2 endpoint)\n");
+		return -EINVAL;
+	}
+	if (ifname[0] == '\0')
+		return 0;
 
 	fd = socket(AF_PACKET, (SOCK_RAW | SOCK_NONBLOCK), htons(ETH_P_ALL));
 	if (fd < 0) {
-		fprintf(stderr, "uet_dev: L2 socket: %s\n", strerror(errno));
-		return;
+		error = errno;
+		fprintf(stderr, "uet_dev: L2 socket: %s\n", strerror(error));
+		return -error;
 	}
 
-	dev->l2_ifindex = (int)if_nametoindex(dev->ifname);
+	dev->l2_ifindex = (int)if_nametoindex(ifname);
 	if (dev->l2_ifindex == 0) {
+		error = errno ? errno : ENODEV;
 		fprintf(stderr, "uet_dev: if_nametoindex(%s): %s\n",
-			dev->ifname, strerror(errno));
+			ifname, strerror(error));
 		close(fd);
-		return;
+		return -error;
 	}
 
 	memset(&sll, 0, sizeof(sll));
@@ -196,12 +213,14 @@ void uet_dev_l2_open(struct uet_dev *dev)
 	sll.sll_ifindex = dev->l2_ifindex;
 
 	if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
-		fprintf(stderr, "uet_dev: L2 bind: %s\n", strerror(errno));
+		error = errno;
+		fprintf(stderr, "uet_dev: L2 bind: %s\n", strerror(error));
 		close(fd);
-		return;
+		return -error;
 	}
 
 	dev->l2_fd = fd;
+	return 0;
 }
 
 /* close the L2 socket */

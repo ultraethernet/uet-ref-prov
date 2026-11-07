@@ -1110,6 +1110,7 @@ int nic_vpp_initialize(struct uet_nic *nic)
 	const char *dma_socket = getenv(UET_VPP_DMA_SOCKET);
 	const char *ifname = getenv(UET_IFNAME);
 	const char *pds = getenv(UET_PDS);
+	const char *mac_text = getenv("UET_VPP_MAC_ADDR");
 	struct vpp_data *vdata;
 	int rc;
 
@@ -1195,6 +1196,26 @@ int nic_vpp_initialize(struct uet_nic *nic)
 	nic->mac_addr[3] = 0x55;
 	nic->mac_addr[4] = 0x45;
 	nic->mac_addr[5] = 0x54;
+	/* Match the guest netdev identity to its Linux L2 endpoint.
+	 * Retain the existing address when no override is supplied.
+	 */
+	if (mac_text) {
+		unsigned int octet[ETH_ALEN];
+		int consumed = 0;
+
+		if (sscanf(mac_text, "%2x:%2x:%2x:%2x:%2x:%2x%n",
+			   &octet[0], &octet[1], &octet[2], &octet[3],
+			   &octet[4], &octet[5], &consumed) != ETH_ALEN ||
+		    mac_text[consumed] != '\0' || (octet[0] & 1) ||
+		    !(octet[0] | octet[1] | octet[2] | octet[3] |
+		      octet[4] | octet[5])) {
+			rc = -EINVAL;
+			UET_API_ERR("invalid UET_VPP_MAC_ADDR");
+			goto err_finalize;
+		}
+		for (size_t i = 0; i < ETH_ALEN; i++)
+			nic->mac_addr[i] = (uint8_t)octet[i];
+	}
 	uet_mac_addr_to_str(nic->mac_addr_str, nic->mac_addr);
 	rc = nic_vpp_parse_addresses(nic);
 	if (rc) {
