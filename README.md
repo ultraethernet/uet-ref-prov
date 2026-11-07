@@ -50,9 +50,10 @@ layers. The second PDS implementation is fully featured transport based on the
 UET PDS Specification. It supports the RUD, ROD, RUDI, and UUD delivery modes
 (see [Delivery Modes](#delivery-modes) below).
 
-There are currently two implementations of the NIC shim interface APIs:
+There are currently three implementations of the NIC shim interface APIs:
 - Raw Ethernet socket
 - AF_XDP
+- VPP
 
 Testing is performed using a simple top-level program that performs ping-pong
 message data transfer operations between a client and a server (see `uet.c`).
@@ -220,6 +221,33 @@ The dedicated binary defaults to `UET_NIC_SHIM=vpp`. Configure one VPP-owned
 application segment per process and provide its name, DMA socket, local IP
 address and optional MTU through the variables below. The plugin architecture,
 VPP CLI and manual low-level tests are documented in
+[`vpp-plugin/README.md`](vpp-plugin/README.md).
+
+#### VPP-backed reference Verbs transport
+
+Build the reference transport with both the Verbs frontend and the VPP NIC
+shim enabled:
+
+```sh
+make vpp-verbs \
+  LIBFABRIC=/path/to/libfabric \
+  VPP_PLUGIN_BUILD=build/vpp-plugin
+```
+
+This produces `libuet_verbs_vpp.so`, linked to `libuet_vpp_client.so`.
+It exposes the reference transport API used by the PCIe/vfio-user device
+model; it is not a libibverbs provider. In that architecture, applications
+use the guest's `uet_ref` libibverbs provider, while the host model runs
+the reference SES/PDS/TSS transport and passes packets to VPP.
+
+The optional VPP-backed device-model target and its guest setup are a
+separate integration change tracked in
+[PR #169](https://github.com/ultraethernet/uet-ref-prov/pull/169).
+The library itself needs neither UPROT nor a guest kernel/rdma-core build.
+It uses the same `UET_VPP_*` configuration as the standalone VPP build.
+
+The default `libuet_verbs.so` and `make dev` continue to build without a
+VPP runtime dependency. Build the VPP plugin/client first as described in
 [`vpp-plugin/README.md`](vpp-plugin/README.md).
 
 ### CC Tester

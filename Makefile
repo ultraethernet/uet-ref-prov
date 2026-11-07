@@ -116,6 +116,16 @@ VPP_BIN=uet_vpp
 VPP_OBJ_DIR=obj_vpp
 VPP_MAIN_OBJ=$(VPP_OBJ_DIR)/uet.o
 
+# UET Verbs library using the VPP NIC shim.  Keep this as a distinct output
+# so the normal libuet_verbs.so build remains available without a VPP runtime
+# dependency.
+VPP_VERBS_LIBNAME=uet_verbs_vpp
+VPP_VERBS_LIB=lib$(VPP_VERBS_LIBNAME).so
+VPP_VERBS_LIB_SRC=$(LIB_SRC)
+VPP_VERBS_LIB_OBJ_DIR=obj_vpp_libuet_verbs
+VPP_VERBS_LIB_OBJ=$(patsubst %.c, $(VPP_VERBS_LIB_OBJ_DIR)/%.o, \
+	$(VPP_VERBS_LIB_SRC))
+
 CC_SIM_BIN=uet_cc_sim
 CC_SIM_SRC=$(wildcard cc/*.c cc_sim/*.c)
 CC_SIM_OBJ_DIR=obj_cc_sim
@@ -133,6 +143,10 @@ strict-core: $(STRICT_FABRIC_OBJ) $(STRICT_VERBS_OBJ)
 
 # VPP target
 vpp: $(VPP_BIN)
+
+# Reference Verbs transport with VPP packet I/O, for consumers such as the
+# PCIe/vfio-user device model. No standalone application is built here.
+vpp-verbs: $(VPP_VERBS_LIB)
 
 # CC sim target
 cc_sim: $(CC_SIM_BIN)
@@ -233,6 +247,18 @@ $(VPP_BIN): $(VPP_LIB) $(VPP_MAIN_OBJ)
 		-L$(VPP_PLUGIN_BUILD)/lib -luet_vpp_client \
 		$(LDFLAGS) $(LF_LIBS)
 
+$(VPP_VERBS_LIB_OBJ_DIR)/%.o: %.c $(HDRS)
+	@mkdir -p $(VPP_VERBS_LIB_OBJ_DIR)/$(dir $<)
+	@echo 'Building VPP verbs library object: $<'
+	@$(CC) $(CFLAGS) -DENABLE_VERBS=1 -DENABLE_VPP=1 \
+		$(INCS) $(LF_LOCAL_HDRS) -Ivpp-plugin/client \
+		-fPIC -c -o $@ $<
+
+$(VPP_VERBS_LIB): $(VPP_VERBS_LIB_OBJ)
+	@echo 'Building VPP verbs shared library: $@'
+	@$(CC) -shared $(VPP_VERBS_LIB_OBJ) -o $@ $(LDFLAGS) \
+		-L$(VPP_PLUGIN_BUILD)/lib -luet_vpp_client
+
 $(CC_SIM_OBJ_DIR)/%.o: %.c $(HDRS)
 	@mkdir -p $(CC_SIM_OBJ_DIR)/$(dir $<)
 	@echo 'Building file: $<'
@@ -324,7 +350,8 @@ clean:
 		$(XDP_KERN_BIN) \
 		$(VPP_LIB_OBJ_DIR) $(VPP_LIB) \
 		$(VPP_OBJ_DIR) $(VPP_BIN) \
+		$(VPP_VERBS_LIB_OBJ_DIR) $(VPP_VERBS_LIB) \
 		$(CC_SIM_OBJ_DIR) $(CC_SIM_BIN) \
 		$(UET_DEV_OBJ_DIR) $(UET_DEV_BIN)
 
-.PHONY: all xdp vpp strict-core cc_sim dev clean
+.PHONY: all xdp vpp vpp-verbs strict-core cc_sim dev clean
