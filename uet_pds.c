@@ -1609,6 +1609,9 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 	pdc->close_started = true;
 	pdc->close_cmd_psn = close_psn;
 
+	/* the Close Command implicitly clears all PSNs */
+	pdc->clear_pending_time = 0;
+
 	/* transition to the CLOSING state */
 	pdc->state = PDC_STATE_CLOSING;
 
