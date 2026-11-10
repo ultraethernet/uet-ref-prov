@@ -2998,7 +2998,7 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 		       sizeof(struct uet_pds_def_rsp));
 
 	/*
-	 * Borrow the packet's ACK buffer. It holds no built ACK, and the
+	 * Borrow the packet's ACK buffer. It holds no usable ACK, and the
 	 * default response is not kept after it is sent.
 	 */
 	def_rsp_buf = pdc_pkt->ack_buf;
@@ -3143,8 +3143,8 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 			return rc;
 
 		*rtx = true;
-	} else if (orig_pkt->ack) {
-		/* resend previous ACK/response */
+	} else if (orig_pkt->ack && orig_pkt->ack_parsed) {
+		/* previous ACK/response was fully built, resend it */
 		rc = uet_pds_sec_tx_pkt(uet, pdc, orig_pkt, false, true);
 		if (rc != 0)
 			return rc;
@@ -3153,8 +3153,17 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 				"TX ACK PACKET (duplicate)");
 
 		*rtx = true;
+	} else if (orig_pkt->ack && orig_pkt->needs_clear) {
+		/* guaranteed delivery response could not be built */
+		UET_PDS_ERR("PDC %u PSN %u GTD response unavailable",
+			    pdc->pdc_id, pdc_pkt->pkt_pp.pds_psn);
+		rc = uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp,
+				     UET_NACK_GTD_RESP_UNAVAIL, 0);
+		if (rc != 0)
+			return rc;
+		*rtx = true;
 	} else {
-		UET_PDS_ERR("no ACK to retransmit PSN %u on PDC %u",
+		UET_PDS_ERR("no usable ACK to retransmit PSN %u on PDC %u",
 			    pdc_pkt->pkt_pp.pds_psn, pdc->pdc_id);
 		/*
 		 * A ROD packet not yet delivered to SES gets RCVD_SES_PROCG;
@@ -3972,9 +3981,17 @@ static int uet_pds_process_ack_req_cp(struct uet_instance *uet,
 		return 0;
 	}
 
-	/* find previous ACK/response */
-	if (orig_pdc_pkt->ack)
+	/* previous ACK/response is fully built, resend it */
+	if (orig_pdc_pkt->ack && orig_pdc_pkt->ack_parsed)
 		return uet_pds_sec_tx_pkt(uet, pdc, orig_pdc_pkt, false, true);
+
+	/* guaranteed delivery response could not be built */
+	if (orig_pdc_pkt->ack && orig_pdc_pkt->needs_clear) {
+		UET_PDS_ERR("PDC %u PSN %u GTD response unavailable",
+			    pp->pds_dpdcid, pp->pds_psn);
+		return uet_pds_tx_nack(uet, pdc, pp, UET_NACK_GTD_RESP_UNAVAIL,
+				       0);
+	}
 
 	/* if the packet is a ROD request and not reordered, nack it */
 	if ((orig_pdc_pkt->pkt_pp.pds_type == UET_PDS_TYPE_ROD_REQ) &&
@@ -3988,7 +4005,9 @@ static int uet_pds_process_ack_req_cp(struct uet_instance *uet,
 
 static int uet_pds_process_close_req_cp(struct uet_instance *uet,
 					struct uet_pdc *pdc,
-					struct uet_parsed_pkt *pp)
+					struct uet_parsed_pkt *pp,
+					uint8_t *pkt,
+					int pkt_len)
 {
 	struct uet_pdc_pkt *pdc_pkt;
 	int rc;
@@ -4025,20 +4044,42 @@ static int uet_pds_process_close_req_cp(struct uet_instance *uet,
 		return -EINVAL;
 	}
 
-	/* still tracked in the rx window, resend the ACK */
+	/*
+	 * Still tracked in the rx window: resend the ACK if it was fully
+	 * built, otherwise build it again from the saved CLOSE_REQ.
+	 */
 	if (bm_get(pdc->rx_bm, (pp->pds_psn - pdc->rx_bm_base_psn),
 		   (void **)&pdc_pkt)) {
 		UET_PDS_WARN("duplicate CLOSE_REQ PSN %u on PDC %u",
 			     pp->pds_psn, pdc->pdc_id);
-		return uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, false, true);
+		if (pdc_pkt->ack_parsed)
+			return uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, false,
+						  true);
+		return uet_pds_tx_ack_pkt(uet, pdc, pdc_pkt, UET_HDR_NONE, 0,
+					  NULL, false);
 	}
 
-	pdc_pkt = uet_pds_alloc_pdc_pkt(0, UET_PDS_ACK_BUF_LEN);
+	pdc_pkt = uet_pds_alloc_pdc_pkt(pkt_len, UET_PDS_ACK_BUF_LEN);
 	if (pdc_pkt == NULL)
 		return -ENOMEM;
 
+	/*
+	 * The rx buffer is freed once control processing returns, but this
+	 * pdc_pkt stays in rx_bm, so keep a private copy for pkt_pp to
+	 * point into.
+	 */
+	memcpy(pdc_pkt->pkt_buf, pkt, pkt_len);
+	pdc_pkt->pkt = pdc_pkt->pkt_buf;
+	pdc_pkt->pkt_len = pkt_len;
+	rc = uet_parse_pkt(uet, pdc_pkt->pkt, pdc_pkt->pkt_len,
+			   &pdc_pkt->pkt_pp);
+	if (rc != 0) {
+		UET_PDS_ERR("PDC %u malformed CLOSE_REQ copy", pdc->pdc_id);
+		uet_pds_free_pdc_pkt(pdc_pkt);
+		return rc;
+	}
+
 	pdc_pkt->psn = pp->pds_psn;
-	memcpy(&pdc_pkt->pkt_pp, pp, sizeof(*pp));
 	pdc_pkt->pkt_parsed = true;
 	pdc_pkt->needs_clear = false;
 	/* close request is always reordered for ROD type packets */
@@ -4218,7 +4259,8 @@ static int uet_pds_process_control(struct uet_instance *uet,
 		return uet_pds_process_ack_req_cp(uet, pdc, pp);
 
 	case UET_PDS_CTRL_TYPE_CLOSE_REQ:
-		return uet_pds_process_close_req_cp(uet, pdc, pp);
+		return uet_pds_process_close_req_cp(uet, pdc, pp, pkt,
+						    pkt_len);
 
 	case UET_PDS_CTRL_TYPE_CLOSE:
 		return uet_pds_process_close_command_cp(uet, pdc, pp);
