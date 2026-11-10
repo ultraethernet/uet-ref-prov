@@ -824,6 +824,39 @@ static void uet_pdsm_free_pdc(struct uet_pdc *pdc)
 	dlist_insert_tail(&pdc->node, &pds_state.pdc_free_head);
 }
 
+/* destroy the bitmaps of every PDC on the alloc and free lists */
+static void uet_pdsm_destroy_pdcs(void)
+{
+	struct uet_pdc *pdc;
+
+	while (!dlist_empty(&pds_state.pdc_alloc_head)) {
+		dlist_pop_front(&pds_state.pdc_alloc_head,
+				struct uet_pdc, pdc, node);
+
+		if (pdc->is_initiator)
+			HASH_DELETE(pdc_ini_hh, pds_state.pdc_ini_ht, pdc);
+		else
+			HASH_DELETE(pdc_tgt_hh, pds_state.pdc_tgt_ht, pdc);
+
+		if (pdc->tx_bm)
+			bm_destroy(pdc->tx_bm);
+
+		if (pdc->rx_bm)
+			bm_destroy(pdc->rx_bm);
+	}
+
+	while (!dlist_empty(&pds_state.pdc_free_head)) {
+		dlist_pop_front(&pds_state.pdc_free_head,
+				struct uet_pdc, pdc, node);
+
+		if (pdc->tx_bm)
+			bm_destroy(pdc->tx_bm);
+
+		if (pdc->rx_bm)
+			bm_destroy(pdc->rx_bm);
+	}
+}
+
 /*
  * Fail and release every packet still queued on a PDC. Tell SES about each
  * one so the message above it completes rather than waiting for an
@@ -1776,14 +1809,14 @@ int uet_pds_initialize(struct uet_instance *uet)
 		pdc->tx_bm = bm_create(UET_DEFAULT_MP_RANGE);
 		if (!pdc->tx_bm) {
 			UET_PDS_ERR("failed to create Tx bitmap");
-			return -ENOMEM; /* FIXME unwind and free PDCs */
+			goto exit_err;
 		}
 
 		pdc->rx_bm = bm_create(UET_DEFAULT_MP_RANGE);
 		if (!pdc->rx_bm) {
 			UET_PDS_ERR("failed to create Rx bitmap");
 			bm_destroy(pdc->tx_bm);
-			return -ENOMEM; /* FIXME unwind and free PDCs */
+			goto exit_err;
 		}
 
 		dlist_insert_tail(&pdc->node, &pds_state.pdc_free_head);
@@ -1796,13 +1829,14 @@ int uet_pds_initialize(struct uet_instance *uet)
 	pds_state.ready = true;
 
 	return 0;
+
+exit_err:
+	uet_pdsm_destroy_pdcs();
+	return -ENOMEM;
 }
 
 void uet_pds_finalize(struct uet_instance *uet)
 {
-	struct uet_pdc *pdc;
-	struct uet_pdc_pkt *pdc_pkt;
-
 	PDS_GO();
 
 	/* PDS health stats: DoS-reaped PENDING PDCs + PSN-range-driven closes */
@@ -1815,34 +1849,7 @@ void uet_pds_finalize(struct uet_instance *uet)
 
 	/* TODO: reclaim/free all packets stored in the bitmaps... */
 
-	/* destory all allocated PDCs */
-	while (!dlist_empty(&pds_state.pdc_alloc_head)) {
-		dlist_pop_front(&pds_state.pdc_alloc_head,
-				struct uet_pdc, pdc, node);
-
-		if (pdc->is_initiator)
-			HASH_DELETE(pdc_ini_hh, pds_state.pdc_ini_ht, pdc);
-		else
-			HASH_DELETE(pdc_tgt_hh, pds_state.pdc_tgt_ht, pdc);
-
-		if (pdc->tx_bm)
-			bm_destroy(pdc->tx_bm);
-
-		if (pdc->rx_bm)
-			bm_destroy(pdc->rx_bm);
-	}
-
-	/* destroy all free PDCs */
-	while (!dlist_empty(&pds_state.pdc_free_head)) {
-		dlist_pop_front(&pds_state.pdc_free_head,
-				struct uet_pdc, pdc, node);
-
-		if (pdc->tx_bm)
-			bm_destroy(pdc->tx_bm);
-
-		if (pdc->rx_bm)
-			bm_destroy(pdc->rx_bm);
-	}
+	uet_pdsm_destroy_pdcs();
 
 	/* free any outstanding RUDI requests */
 	uet_pds_rudi_finalize();
