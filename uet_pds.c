@@ -296,6 +296,26 @@ static inline uint32_t uet_pds_rand_start_psn(void)
 	return psn;
 }
 
+/*
+ * Initialize the PSN state of both directions from the PDC Start_PSN. Both
+ * directions start at the same Start_PSN, and CACK/CLEAR start at
+ * Start_PSN - 1.
+ */
+static void uet_pds_init_psn(struct uet_pdc *pdc, uint32_t base)
+{
+	pdc->start_psn       = base;
+	pdc->next_psn        = base;
+	pdc->tx_bm_base_psn  = base;
+	pdc->rx_bm_base_psn  = base;
+	pdc->max_cack_psn    = (base - 1);
+	pdc->cack_psn        = (base - 1);
+	pdc->max_clear_psn   = (base - 1);
+	pdc->prev_ar_psn     = (base - 1);
+	pdc->max_rcvd_psn    = (base - 1);
+	pdc->sack_base_track = (base - 1);
+	pdc->accepted_bytes  = 0;
+}
+
 #define PDS_GO()                                          \
 	do {                                              \
 		if (pds_state.ready != true) {            \
@@ -1047,14 +1067,9 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	 * overshoot and raise the shared floor affecting all initiators.
 	 */
 	if (pdc->sec_enabled && (uet_sec_sd_get_ini_start_psn(pdc->sdi) != 0))
-		pdc->start_psn = uet_sec_sd_get_ini_start_psn(pdc->sdi);
+		uet_pds_init_psn(pdc, uet_sec_sd_get_ini_start_psn(pdc->sdi));
 	else
-		pdc->start_psn = uet_pds_rand_start_psn();
-
-	pdc->next_psn       = pdc->start_psn;
-	pdc->tx_bm_base_psn = pdc->start_psn;
-	pdc->rx_bm_base_psn = pdc->start_psn;
-	pdc->max_cack_psn   = (pdc->start_psn - 1);
+		uet_pds_init_psn(pdc, uet_pds_rand_start_psn());
 
 	/* stick this PDC in the initiator hash table */
 	memcpy(&pdc->ini_hkey, &pdc_key, sizeof(pdc_key));
@@ -1197,7 +1212,6 @@ static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
 
 	pdc->is_ipv6        = pp->is_ipv6;
 	pdc->dpdcid         = pp->pds_spdcid;
-	pdc->accepted_bytes = 0;
 
 	uet_pdsm_get_sdi(pdc); /* sets sec_enabled / sdi */
 
@@ -1230,16 +1244,7 @@ static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
 	}
 
 	/* seed all PSN bases from the chosen base (accept or PENDING) */
-	pdc->start_psn       = base;
-	pdc->rx_bm_base_psn  = base;
-	pdc->tx_bm_base_psn  = base;
-	pdc->next_psn        = base;
-	pdc->max_cack_psn    = (base - 1);
-	pdc->cack_psn        = (base - 1);
-	pdc->max_clear_psn   = (base - 1);
-	pdc->prev_ar_psn     = (base - 1);
-	pdc->max_rcvd_psn    = (base - 1);
-	pdc->sack_base_track = pdc->cack_psn;
+	uet_pds_init_psn(pdc, base);
 
 	/* stick this PDC in the target hash table */
 	memcpy(&pdc->tgt_hkey, &pdc_key, sizeof(pdc_key));
@@ -3530,6 +3535,11 @@ static int uet_pds_reestablish_start_psn(struct uet_instance *uet,
 	pdc->tx_bm_base_psn += delta;
 	pdc->rx_bm_base_psn += delta;
 	pdc->max_cack_psn   += delta;
+	pdc->cack_psn       += delta;
+	pdc->max_clear_psn  += delta;
+	pdc->prev_ar_psn    += delta;
+	pdc->max_rcvd_psn   += delta;
+	pdc->sack_base_track += delta;
 
 	/* re-stamp and retransmit each un-ACK'ed packet at its shifted PSN */
 	dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
