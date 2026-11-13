@@ -880,13 +880,15 @@ static void uet_pdsm_destroy_pdcs(void)
 /*
  * Fail and release every packet still queued on a PDC. Tell SES about each
  * one so the message above it completes rather than waiting for an
- * acknowledgement that is not coming.
+ * acknowledgement that is not coming. The Tx window is then restarted at
+ * next_psn so that a close command can still be sent on this PDC.
  */
 static void uet_pdsm_drain_tx_pkts(struct uet_instance *uet,
 				   struct uet_pdc *pdc)
 {
 	struct uet_pdc_pkt *pdc_pkt;
 	struct dlist_entry *tmp;
+	int i;
 
 	dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
 				     struct uet_pdc_pkt, pdc_pkt,
@@ -903,6 +905,19 @@ static void uet_pdsm_drain_tx_pkts(struct uet_instance *uet,
 
 		uet_pds_free_pdc_pkt(pdc_pkt);
 	}
+
+	/*
+	 * Only ACK'ed packets waiting behind a drained hole are left on
+	 * tx_bm. Release them so the window can move past the holes.
+	 */
+	for (i = 0; bm_next_set_bit_iter(pdc->tx_bm, &i); i++) {
+		if (!bm_get(pdc->tx_bm, i, (void **)&pdc_pkt) || !pdc_pkt)
+			continue;
+
+		uet_pds_free_pdc_pkt(pdc_pkt);
+	}
+	bm_clear(pdc->tx_bm);
+	pdc->tx_bm_base_psn = pdc->next_psn;
 }
 
 /* Drop every queued packet that names a SES transmit descriptor. SES calls
