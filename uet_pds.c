@@ -101,6 +101,13 @@
 #define UET_PDS_PSN_AFTER(a, b)       ((int32_t)((a) - (b)) > 0)
 #define UET_PDS_PSN_AFTER_EQ(a, b)    ((int32_t)((a) - (b)) >= 0)
 
+/*
+ * True if psn is in the half-open range [start, end). The range is empty
+ * when start == end and must be shorter than 2^31.
+ */
+#define UET_PDS_PSN_IN_RANGE(psn, start, end)			\
+	((uint32_t)((psn) - (start)) < (uint32_t)((end) - (start)))
+
 typedef enum {
 	PDC_STATE_UNALLOC,
 	PDC_STATE_SYN,
@@ -3614,13 +3621,22 @@ static int uet_pds_process_nack(struct uet_instance *uet,
 		return -EINVAL;
 	}
 
+	/*
+	 * Once established, a NACK must come from the peer PDC. A target
+	 * that has no PDC for the packet (e.g. UET_NACK_INV_DPDCID) sends a
+	 * zero spdcid, which is accepted as well.
+	 */
+	if ((pdc->state != PDC_STATE_SYN) && (pp->pds_spdcid != 0) &&
+	    (pp->pds_spdcid != pdc->dpdcid)) {
+		UET_PDS_WARN("PDC %u NACK spdcid mismatch (%u != %u, code=0x%x)",
+			     pdc->pdc_id, pp->pds_spdcid, pdc->dpdcid,
+			     pp->pds_nack_code);
+		return -EINVAL;
+	}
+
 	UET_PDS_WARN("PDC %u received NACK (code=0x%x psn=%u spdcid=%u)",
 		     pdc->pdc_id, pp->pds_nack_code, pp->pds_psn,
 		     pp->pds_spdcid);
-
-	/* Secure PDC establishment, adopt the target Start_PSN and re-drive */
-	if (pp->pds_nack_code == UET_NACK_NEW_START_PSN)
-		return uet_pds_reestablish_start_psn(uet, pdc, pp->pds_payload);
 
 	nack_action = uet_pds_nack_action(pp->pds_nack_code);
 	if (nack_action == UET_NACK_ACTION_DROP) {
@@ -3633,12 +3649,16 @@ static int uet_pds_process_nack(struct uet_instance *uet,
 	 * A NACK that arrives with an out-of-range pds.nack_psn MUST NOT be
 	 * used to update PDC state.
 	 */
-	if (UET_PDS_PSN_AFTER(pdc->tx_bm_base_psn, pp->pds_psn) ||
-	    UET_PDS_PSN_AFTER(pp->pds_psn, pdc->next_psn - 1)) {
+	if (!UET_PDS_PSN_IN_RANGE(pp->pds_psn, pdc->tx_bm_base_psn,
+				  pdc->next_psn)) {
 		UET_PDS_WARN("Invalid NACK PSN %u on PDC %u",
 			     pp->pds_psn, pdc->pdc_id);
 		return -EINVAL;
 	}
+
+	/* Secure PDC establishment, adopt the target Start_PSN and re-drive */
+	if (pp->pds_nack_code == UET_NACK_NEW_START_PSN)
+		return uet_pds_reestablish_start_psn(uet, pdc, pp->pds_payload);
 
 	if ((pdc->state == PDC_STATE_SYN) && (pp->pds_spdcid != 0)) {
 		UET_PDS_DBG("PDC %u transitioned to the ESTABLISHED state",
