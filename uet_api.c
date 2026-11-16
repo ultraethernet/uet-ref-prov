@@ -613,16 +613,18 @@ static int uet_alloc_msg_id(struct uet_instance *uet, uint16_t *msg_id)
 	uint16_t next_msg_id;
 	uint8_t *state, prev_state;
 
-	next_msg_id = uet->msg_id_cb.next_msg_id;
+	/* The cursor is only a hint; the per-ID atomic state claims ownership. */
+	next_msg_id = __atomic_load_n(&uet->msg_id_cb.next_msg_id,
+				       __ATOMIC_RELAXED);
 	for (cnt = 0, state = &uet->msg_id_cb.state[next_msg_id];
 	     cnt <= UET_MAX_MSG_ID; cnt++) {
 		prev_state = __atomic_exchange_n(
 				state, UET_MSG_ID_ALLOCATED, __ATOMIC_SEQ_CST);
 		if (prev_state == UET_MSG_ID_AVAILABLE) {
 			*msg_id = next_msg_id;
-			uet->msg_id_cb.next_msg_id = next_msg_id + 1;
-			if (uet->msg_id_cb.next_msg_id > UET_MAX_MSG_ID)
-				uet->msg_id_cb.next_msg_id = 0;
+			__atomic_store_n(&uet->msg_id_cb.next_msg_id,
+					 (uint16_t)(next_msg_id + 1),
+					 __ATOMIC_RELAXED);
 			return FI_SUCCESS;
 		}
 		if (++next_msg_id > UET_MAX_MSG_ID)
@@ -673,8 +675,10 @@ static struct uet_rx_desc *uet_get_msg_id_rx_desc(struct uet_instance *uet,
  */
 static void uet_dealloc_msg_id(struct uet_instance *uet, uint16_t msg_id)
 {
-	uet->msg_id_cb.state[msg_id] = UET_MSG_ID_AVAILABLE;
 	uet->msg_id_cb.rx_desc[msg_id] = NULL;
+	/* Publish availability only after the previous owner's cleanup. */
+	__atomic_store_n(&uet->msg_id_cb.state[msg_id], UET_MSG_ID_AVAILABLE,
+			 __ATOMIC_RELEASE);
 }
 
 /* insert entry into list of buffered rtr tx descriptors for an endpoint */
