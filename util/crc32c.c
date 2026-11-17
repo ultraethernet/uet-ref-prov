@@ -23,10 +23,31 @@
  */
 
 #include <stdint.h>
+#include <string.h>
 #include <arpa/inet.h>
 
 #include "crc32c.h"
 
+/* Use only instructions enabled for the compiler's target. Generic builds
+ * retain the portable implementation; there is no runtime CPU dispatch.
+ */
+#if defined(__SSE4_2__)
+#include <nmmintrin.h>
+#define crc32c_u8 _mm_crc32_u8
+#define crc32c_u32 _mm_crc32_u32
+#if defined(__x86_64__)
+#define crc32c_u64 _mm_crc32_u64
+#endif
+#elif defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#define crc32c_u8 __crc32cb
+#define crc32c_u32 __crc32cw
+#if defined(__aarch64__)
+#define crc32c_u64 __crc32cd
+#endif
+#endif
+
+#ifndef crc32c_u8
 /*
  * This is the CRC-32C table
  * Generated with:
@@ -102,10 +123,10 @@ static const uint32_t crc32c_table[256] = {
 	0x79B737BAL, 0x8BDCB4B9L, 0x988C474DL, 0x6AE7C44EL,
 	0xBE2DA0A5L, 0x4C4623A6L, 0x5F16D052L, 0xAD7D5351L
 };
+#endif
 
 /*
- * Steps through buffer one byte at at time, calculates reflected
- * crc using table.
+ * CRC32C state has the same representation in the instruction and table paths.
  */
 
 uint32_t crc32c_init(void)
@@ -117,8 +138,40 @@ uint32_t crc32c_update(uint32_t crc,
 		       const uint8_t *data,
 		       uint32_t length)
 {
+#ifdef crc32c_u8
+	/* memcpy permits unaligned input without violating aliasing rules.
+	 * CRC instructions consume the least significant byte first.
+	 */
+#ifdef crc32c_u64
+	while (length >= sizeof(uint64_t)) {
+		uint64_t word;
+
+		memcpy(&word, data, sizeof(word));
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		word = __builtin_bswap64(word);
+#endif
+		crc = (uint32_t)crc32c_u64(crc, word);
+		data += sizeof(word);
+		length -= sizeof(word);
+	}
+#endif
+	while (length >= sizeof(uint32_t)) {
+		uint32_t word;
+
+		memcpy(&word, data, sizeof(word));
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		word = __builtin_bswap32(word);
+#endif
+		crc = crc32c_u32(crc, word);
+		data += sizeof(word);
+		length -= sizeof(word);
+	}
+	while (length--)
+		crc = crc32c_u8(crc, *data++);
+#else
 	while (length--)
 		crc = crc32c_table[(crc ^ *data++) & 0xFFL] ^ (crc >> 8);
+#endif
 
 	return crc;
 }
