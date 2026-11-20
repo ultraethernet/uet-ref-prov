@@ -296,10 +296,7 @@ int uet_pds_uud_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	return 0;
 }
 
-int uet_pds_uud_rx(struct uet_instance *uet,
-		   struct uet_parsed_pkt *pp,
-		   uint8_t *pkt,
-		   size_t pkt_len)
+int uet_pds_uud_rx(struct uet_instance *uet, struct uet_parsed_pkt *pp)
 {
 	struct uet_pds_info pds_info;
 	uet_pds_next_hdr_t rsp_next_hdr;
@@ -326,8 +323,6 @@ int uet_pds_uud_rx(struct uet_instance *uet,
 		UET_PDS_ERR("UUD: SES rx_req failed (rc %d)", rc);
 
 	UET_PDS_DBG("UUD RX REQ delivered (no response)");
-
-	free(pkt);
 
 	return rc;
 }

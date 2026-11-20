@@ -2258,8 +2258,9 @@ static void uet_finalize_core(struct uet_instance *uet)
 	uet_ep_hash_finalize(uet);
 	imp_shim_finalize();
 	uet_domain_free_all(uet);
-	uet_nic_finalize(UET_NIC(uet));
+	/* Return PDS-held RX buffers before closing the NIC. */
 	uet->pds.downcall.finalize(uet);
+	uet_nic_finalize(UET_NIC(uet));
 }
 
 /* init rx descriptor used to track errored msg */
