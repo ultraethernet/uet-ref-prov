@@ -1677,6 +1677,11 @@ static void uet_tx_cq_post_entry(struct uet_tx_desc *tx_desc)
 static void uet_tx_desc_set_err(struct uet_tx_desc *tx_desc, int err_code,
 				uet_tx_desc_state_t desc_state)
 {
+	/* A partially transmitted message can still receive PDS upcalls.
+	 * Complete it only after PDS has retired its outstanding packets. */
+	if (desc_state == UET_TX_DESC_STATE_ERR_COMPLETE && tx_desc->unack_pkts)
+		desc_state = UET_TX_DESC_STATE_ERR;
+
 	tx_desc->err_code = err_code;
 	tx_desc->state = desc_state;
 }
