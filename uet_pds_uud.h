@@ -47,7 +47,6 @@ int uet_pds_uud_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
  * uet_pds_progress_rx(). Delivers the untagged send and sends no response.
  * Takes full ownership of the packet!
  */
-int uet_pds_uud_rx(struct uet_instance *uet, struct uet_parsed_pkt *pp,
-		   uint8_t *pkt, size_t pkt_len);
+int uet_pds_uud_rx(struct uet_instance *uet, struct uet_parsed_pkt *pp);
 
 #endif /* _UET_PDS_UUD_H_ */

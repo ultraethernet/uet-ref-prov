@@ -9,6 +9,7 @@
 #define _UET_NIC_H_
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <assert.h>
 #include <errno.h>
@@ -59,6 +60,36 @@ struct uet_nic_lo_pkt {
 	size_t                 len;
 	uint8_t                data[];
 };
+
+/*
+ * Receive buffer from a NIC that lends frame storage. The Ethernet frame
+ * is contiguous and writable while held by the PDS. release is called
+ * once on the progress owner after the last use, which may be after
+ * several progress calls. The callback must not reenter libuet.
+ */
+struct uet_nic_rx_release {
+	void (*fn)(void *context, uint64_t id, uint32_t token);
+	void *context;
+	uint64_t id;
+	uint32_t token;
+};
+
+struct uet_nic_rx_buffer {
+	uint8_t *data;
+	size_t length;
+	struct uet_nic_rx_release release;
+};
+
+static inline void uet_nic_release_rx_buffer(
+	const struct uet_nic_rx_release *release, uint8_t *data)
+{
+	if (!data)
+		return;
+	if (release->fn)
+		release->fn(release->context, release->id, release->token);
+	else
+		free(data);
+}
 
 /* nic control block structure - field of struct uet_instance */
 struct uet_nic {
@@ -123,6 +154,14 @@ struct uet_nic {
 	int (*nic_rx_poll)(struct uet_nic *nic);
 	void (*nic_finalize)(struct uet_nic *nic);
 	int (*nic_initialize)(struct uet_nic *nic);
+	/* Optional. Return 1 with an owned buffer, 0 when empty, or
+	 * -EOPNOTSUPP to leave the next frame for nic_rx_pkt(). Other
+	 * errors acquire no buffer. The legacy receive callbacks remain
+	 * available for loopback and frames the driver cannot lend.
+	 */
+	int (*nic_rx_acquire)(struct uet_nic *nic,
+			      struct uet_nic_rx_buffer *buffer);
+	unsigned int rx_progress_budget; /* 0/1: one frame per progress */
 };
 
 /*********************************************************************

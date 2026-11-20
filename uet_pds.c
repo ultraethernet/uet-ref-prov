@@ -150,6 +150,7 @@ struct uet_pdc_pkt {
 	bool                  pkt_parsed;
 	struct uet_parsed_pkt ack_pp;
 	bool                  ack_parsed;
+	struct uet_nic_rx_release rx_release;
 };
 
 /* The PDC key used for hash table lookups. */
@@ -601,47 +602,41 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
  *   negative value corresponding to errno, err reading packet
  */
 static int uet_pds_sec_rx_pkt(struct uet_instance *uet,
-			      uint8_t **pkt,
-			      size_t *pkt_len)
+			      struct uet_nic_rx_buffer *buffer)
 {
-	int tag_len;
-	int rc;
+	struct uet_nic *nic = UET_NIC(uet);
+	int tag_len, rc;
 
-	*pkt = NULL;
-	*pkt_len = 0;
+	if (nic->nic_rx_acquire && !nic->lo_head) {
+		rc = nic->nic_rx_acquire(nic, buffer);
+		if (rc == 1)
+			goto decrypt;
+		if (rc != -EOPNOTSUPP)
+			return rc;
+	}
 
-	/* check if packet is available */
-	rc = uet_nic_rx_poll(UET_NIC(uet));
+	rc = uet_nic_rx_poll(nic);
 	if (rc != 1)
 		return rc;
 
-	/* TODO: Remove this malloc... */
-	/* allocate a receive packet buffer */
-	*pkt = calloc(1, uet->nic.max_pkt_size);
-	if (*pkt == NULL) {
+	buffer->data = calloc(1, nic->max_pkt_size);
+	if (!buffer->data) {
 		UET_PDS_ERR("failed to alloc Rx packet buffer");
 		return -ENOMEM;
 	}
 
-	/* receive the packet */
-	rc = uet_nic_rx_pkt(UET_NIC(uet),
-			    *pkt,
-			    uet->nic.max_pkt_size,
-			    pkt_len);
+	rc = uet_nic_rx_pkt(nic, buffer->data, nic->max_pkt_size,
+			    &buffer->length);
 	if (rc != 1)
-		goto err_exit;
+		goto exit_error;
 
-	/* decrypt the packet if the security header is present */
-	rc = uet_sec_dec_pkt(uet, *pkt, *pkt_len, &tag_len);
-	if (rc != 0)
-		goto err_exit;
+decrypt:
+	rc = uet_sec_dec_pkt(uet, buffer->data, buffer->length, &tag_len);
+	if (rc == 0)
+		return 1;
 
-	return 1;
-
-err_exit:
-	free(*pkt);
-	*pkt = NULL;
-	*pkt_len = 0;
+exit_error:
+	uet_nic_release_rx_buffer(&buffer->release, buffer->data);
 	return rc;
 }
 
@@ -715,8 +710,7 @@ static void uet_pds_free_pdc_pkt(struct uet_pdc_pkt *pdc_pkt)
 
 	if (pdc_pkt->ack_buf)
 		free(pdc_pkt->ack_buf);
-	if (pdc_pkt->pkt_buf)
-		free(pdc_pkt->pkt_buf);
+	uet_nic_release_rx_buffer(&pdc_pkt->rx_release, pdc_pkt->pkt_buf);
 	free(pdc_pkt);
 }
 
@@ -1810,9 +1804,7 @@ void uet_pds_finalize(struct uet_instance *uet)
 	UET_PDS_INFO("%-30s : %u", "pdc_close_in_err_cnt",
 		     pds_state.pdc_close_in_err_cnt);
 
-	/* TODO: reclaim/free all packets stored in the bitmaps... */
-
-	/* destory all allocated PDCs */
+	/* Destroy all allocated PDCs. */
 	while (!dlist_empty(&pds_state.pdc_alloc_head)) {
 		dlist_pop_front(&pds_state.pdc_alloc_head,
 				struct uet_pdc, pdc, node);
@@ -1822,11 +1814,9 @@ void uet_pds_finalize(struct uet_instance *uet)
 		else
 			HASH_DELETE(pdc_tgt_hh, pds_state.pdc_tgt_ht, pdc);
 
-		if (pdc->tx_bm)
-			bm_destroy(pdc->tx_bm);
-
-		if (pdc->rx_bm)
-			bm_destroy(pdc->rx_bm);
+		uet_pdsm_free_pdc_pkts(pdc);
+		bm_destroy(pdc->tx_bm);
+		bm_destroy(pdc->rx_bm);
 	}
 
 	/* destroy all free PDCs */
@@ -4250,8 +4240,7 @@ exit_err:
 
 static int uet_pds_process_request(struct uet_instance *uet,
 				   struct uet_parsed_pkt *pp,
-				   uint8_t *pkt,
-				   int pkt_len)
+				   const struct uet_nic_rx_buffer *buffer)
 {
 	struct uet_pdc_pkt *pdc_pkt;
 	struct uet_pdc *pdc;
@@ -4274,10 +4263,9 @@ static int uet_pds_process_request(struct uet_instance *uet,
 
 	pdc_pkt->psn = pp->pds_psn;
 	pdc_pkt->msg_id = pp->ses_msg_id;
-	pdc_pkt->pkt = pkt;
-	pdc_pkt->pkt_len = pkt_len;
-	pdc_pkt->pkt_buf = pkt;
-	pdc_pkt->pkt_buf_len = pkt_len;
+	pdc_pkt->pkt = pdc_pkt->pkt_buf = buffer->data;
+	pdc_pkt->pkt_len = pdc_pkt->pkt_buf_len = buffer->length;
+	pdc_pkt->rx_release = buffer->release;
 	memcpy(&pdc_pkt->pkt_pp, pp, sizeof(*pp));
 	pdc_pkt->pkt_parsed = true;
 
@@ -4393,8 +4381,9 @@ exit_err:
 	return rc;
 }
 
-int uet_pds_progress_rx(struct uet_instance *uet)
+static int uet_pds_progress_rx_one(struct uet_instance *uet, bool *received)
 {
+	struct uet_nic_rx_buffer buffer = { 0 };
 	uint8_t *pkt;
 	size_t pkt_len;
 	struct uet_parsed_pkt pp;
@@ -4411,9 +4400,13 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 
 	PDS_GO();
 
-	rc = uet_pds_sec_rx_pkt(uet, &pkt, &pkt_len);
+	*received = false;
+	rc = uet_pds_sec_rx_pkt(uet, &buffer);
 	if (rc != 1)
 		return rc;
+	*received = true;
+	pkt = buffer.data;
+	pkt_len = buffer.length;
 
 	/* validate the packet */
 	if (!uet_pds_rx_pkt_chk(uet, pkt, pkt_len,
@@ -4458,20 +4451,12 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 
 	uet_pds_pkt_dbg(uet, &pp, false, "RX PACKET");
 
-	/* RUDI is connectionless and demuxed here by pds_type. The RUDI
-	 * engine takes ownership of pkt.
-	 */
-	if ((pp.pds_type == UET_PDS_TYPE_RUDI_REQ) ||
-	    (pp.pds_type == UET_PDS_TYPE_RUDI_RESP))
-		return uet_pds_rudi_rx(uet, &pp, pkt, pkt_len);
-
-	/* UUD is connectionless and demuxed here by pds_type. The UUD
-	 * engine takes ownership of pkt.
-	 */
-	if (pp.pds_type == UET_PDS_TYPE_UUD_REQ)
-		return uet_pds_uud_rx(uet, &pp, pkt, pkt_len);
-
-	if (pkt_is_ack) {
+	if (pp.pds_type == UET_PDS_TYPE_RUDI_REQ ||
+	    pp.pds_type == UET_PDS_TYPE_RUDI_RESP) {
+		rc = uet_pds_rudi_rx(uet, &pp);
+	} else if (pp.pds_type == UET_PDS_TYPE_UUD_REQ) {
+		rc = uet_pds_uud_rx(uet, &pp);
+	} else if (pkt_is_ack) {
 
 		rc = uet_pds_process_ack(uet, &pp);
 
@@ -4485,14 +4470,28 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 
 	} else { /* request packet */
 
-		rc = uet_pds_process_request(uet, &pp, pkt, pkt_len);
+		rc = uet_pds_process_request(uet, &pp, &buffer);
 		if (rc == 0)
 			return 0;
 
 	}
 
 exit:
-	free(pkt);
+	uet_nic_release_rx_buffer(&buffer.release, pkt);
+	return rc;
+}
+
+int uet_pds_progress_rx(struct uet_instance *uet)
+{
+	unsigned int budget = uet->nic.rx_progress_budget;
+	bool received;
+	int rc;
+
+	/* A zero budget keeps the single-frame behavior of existing shims. */
+	budget = uet_max(1U, budget);
+	do {
+		rc = uet_pds_progress_rx_one(uet, &received);
+	} while (rc == 0 && received && --budget);
 	return rc;
 }
 

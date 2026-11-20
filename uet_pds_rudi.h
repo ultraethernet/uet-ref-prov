@@ -60,7 +60,6 @@ int uet_pds_rudi_progress_tx(struct uet_ep *uet_ep,
 /* Process a received RUDI packet (REQ or RSP). Dispatched from the PDS
  * engine's uet_pds_progress_rx(). Takes full ownership of the packet!
  */
-int uet_pds_rudi_rx(struct uet_instance *uet, struct uet_parsed_pkt *pp,
-		    uint8_t *pkt, size_t pkt_len);
+int uet_pds_rudi_rx(struct uet_instance *uet, struct uet_parsed_pkt *pp);
 
 #endif /* _UET_PDS_RUDI_H_ */

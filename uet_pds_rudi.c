@@ -527,10 +527,7 @@ static int uet_rudi_rx_rsp(struct uet_instance *uet,
 	return 0;
 }
 
-int uet_pds_rudi_rx(struct uet_instance *uet,
-		    struct uet_parsed_pkt *pp,
-		    uint8_t *pkt,
-		    size_t pkt_len)
+int uet_pds_rudi_rx(struct uet_instance *uet, struct uet_parsed_pkt *pp)
 {
 	int rc;
 
@@ -538,8 +535,6 @@ int uet_pds_rudi_rx(struct uet_instance *uet,
 		rc = uet_rudi_rx_req(uet, pp);
 	else
 		rc = uet_rudi_rx_rsp(uet, pp);
-
-	free(pkt);
 
 	return rc;
 }
