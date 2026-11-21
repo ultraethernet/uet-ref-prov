@@ -568,6 +568,7 @@ struct uet_ep; /* forward reference */
 
 /* control block for uet instance */
 struct uet_instance {
+	struct uet_ep *context_parent; /* experimental shared endpoint */
 	     /* Optional address translation function for memory-region page  */
 	     /* lists. NULL means the identity. See uet_set_dma_xlate().      */
 	uet_dma_xlate_fn dma_xlate;
@@ -670,6 +671,18 @@ struct uet_cq {
 
 /* endpoint control block */
 struct uet_ep {
+	/* Only the parent is registered as an endpoint. A context reuses the
+	 * ordinary descriptor/CQ layout and carries the parent's wire address.
+	 */
+	struct uet_ep *parent;
+	unsigned int context_slot;
+	uint32_t peer_ipv4;              /* host order, immutable after open */
+	uint32_t next_context_msg_id;
+	uint32_t context_msg_id_limit;
+	bool ever_enabled;
+	unsigned int context_slots;
+	unsigned int live_contexts;
+	struct uet_ep *peer_contexts[2];
 	pthread_mutex_t data_lock;        /* lock for data path thread safety */
 	uet_ep_state_t ep_state;                         /* state of endpoint */
 	struct dlist_entry ep_list_entry;              /* endpoint list entry */
