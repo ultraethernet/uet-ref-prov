@@ -60,15 +60,17 @@ int nic_rawsock_tx_pkt(struct uet_nic *nic,
 		(struct rawsock_data *)nic->nic_priv_data;
 	size_t len;
 
-	memcpy(rdata->sadr.sll_addr, eth->h_dest, ETH_ALEN);
+	struct sockaddr_ll destination = rdata->sadr;
+
+	memcpy(destination.sll_addr, eth->h_dest, ETH_ALEN);
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
 	uet_pkt_hex_dump(pkt, pkt_size, 0, true);
 #endif
 
 	len = sendto(rdata->sock_fd.fd, pkt, pkt_size, 0,
-		     (const struct sockaddr *)&rdata->sadr,
-		     sizeof(struct sockaddr_ll));
+		     (const struct sockaddr *)&destination,
+		     sizeof(destination));
 	if (len != pkt_size) {
 		if (len == -1)
 			UET_API_PRINT_ERRNO("sendto");

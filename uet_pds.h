@@ -319,11 +319,10 @@ struct uet_pds_to_ses_funcs {
 		       uet_pds_err_code_t reason);
 };
 
-struct uet_pds_state;
-
 /* pds control block structure - embedded in uet_instance struct */
+struct uet_pds_state;
 struct uet_pds {
-	struct uet_pds_state *state;	/* instance-owned PDC manager */
+	struct uet_pds_state *state;     /* legacy instance-owned PDC table */
 	struct uet_ses_to_pds_funcs downcall;     /* ptr's to pds functions */
 	struct uet_pds_to_ses_funcs upcall;       /* ptr's to ses functions */
 	time_t tx_timeout;               /* retry after this amount of time */
@@ -339,5 +338,7 @@ struct uet_pds {
 
 /* initialize the PDS and set the proper downcall function pointers */
 int uet_pds_init(struct uet_instance *uet);
+int uet_pds_rx_context(struct uet_ep *ep, const void *frame, size_t len);
+bool uet_ep_context_matches(struct uet_ep *ep, struct uet_parsed_pkt *pp);
 
 #endif /* _UET_PDS_H_ */
