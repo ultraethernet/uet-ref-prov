@@ -2419,11 +2419,11 @@ static int uet_pds_check_rtx_pkt(struct uet_instance *uet,
 	return -EAGAIN; /* pkt retransmitted, could be more */
 }
 
-int uet_pds_progress_tx_pkt(struct uet_instance *uet,
-			    uet_pkt_handle_t *err_pkt_handle,
-			    struct uet_pdc *pdc,
-			    struct uet_pdc_pkt *pdc_pkt)
+static int uet_pds_progress_tx_pkt(struct uet_ep *uet_ep,
+				   struct uet_pdc *pdc,
+				   struct uet_pdc_pkt *pdc_pkt)
 {
+	struct uet_instance *uet = uet_ep->uet_domain->uet;
 	uet_pkt_handle_t failed;
 	int rc;
 
@@ -2444,7 +2444,7 @@ int uet_pds_progress_tx_pkt(struct uet_instance *uet,
 		uet_pds_close_pdc_in_error(uet, pdc);
 
 		/* the rest of this message's pkts go with this failed one */
-		uet_pds_drop_tx_pkts(NULL, failed);
+		uet_pds_drop_tx_pkts(uet_ep, failed);
 
 		/*
 		 * Will return immediately to give the SES layer a chance to
@@ -2546,8 +2546,7 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 		dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
 					     struct uet_pdc_pkt, pdc_pkt,
 					     node, tmp2) {
-			rc = uet_pds_progress_tx_pkt(uet, err_pkt_handle,
-						     pdc, pdc_pkt);
+			rc = uet_pds_progress_tx_pkt(uet_ep, pdc, pdc_pkt);
 
 			/* no retransmit, done with this PDC */
 			if (rc == 0)
