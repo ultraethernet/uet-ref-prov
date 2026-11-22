@@ -881,10 +881,10 @@ static void uet_dealloc_tx_rtr_token(struct uet_tx_desc *tx_desc)
 /* allocate next msg sequence number for address vector */
 static uint64_t uet_alloc_av_msg_seq_num(struct uet_av_entry *av_entry)
 {
-	uint64_t seq_num;
+	if (av_entry->context)
+		return av_entry->seq_num++;
 
-	seq_num = __atomic_fetch_add(&av_entry->seq_num, 1,  __ATOMIC_SEQ_CST);
-	return seq_num;
+	return __atomic_fetch_add(&av_entry->seq_num, 1, __ATOMIC_SEQ_CST);
 }
 
 /* determine if sequence number is next to be transmitted for av */
@@ -897,7 +897,10 @@ static bool uet_is_next_av_msg_tx_seq_num(struct uet_av_entry *av_entry,
 /* increment next msg sequence number for address vector */
 static void uet_inc_av_msg_next_tx_seq_num(struct uet_av_entry *av_entry)
 {
-	__atomic_fetch_add(&av_entry->next_tx_seq_num, 1,  __ATOMIC_SEQ_CST);
+	if (av_entry->context)
+		av_entry->next_tx_seq_num++;
+	else
+		__atomic_fetch_add(&av_entry->next_tx_seq_num, 1, __ATOMIC_SEQ_CST);
 }
 
 /* set next transmit sequence number for address vector */
@@ -905,6 +908,12 @@ static void uet_set_av_msg_tx_seq_num(struct uet_av_entry *av_entry,
 				      uint64_t new_tx_seq_num)
 {
 	uint64_t next_tx_seq_num;
+
+	if (av_entry->context) {
+		if (new_tx_seq_num < av_entry->next_tx_seq_num)
+			av_entry->next_tx_seq_num = new_tx_seq_num;
+		return;
+	}
 
 	while (1) {
 		next_tx_seq_num = av_entry->next_tx_seq_num;
@@ -6250,6 +6259,8 @@ static ssize_t uet_send_req_api_common(
 	    !av_entry || uet_addr_is_ipv6(av_entry->addr) ||
 	    av_entry->addr->fa.v4 != uet_ep->peer_ipv4))
 		return -FI_ENOSYS;
+	if (av_entry && av_entry->context != (uet_ep->parent ? uet_ep : NULL))
+		return -FI_EINVAL;
 
 	/* check that tx completion queue is bound to endpoint */
 	if (uet_ep->send_cq.cq_state == UET_CQ_DOWN) {
@@ -7792,7 +7803,7 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 	pds = &uet_ep->uet_domain->uet->pds;
 
 	/* Error if there are outstanding msg transmits */
-	if (uet_ep->live_contexts)
+	if (uet_ep->live_contexts || uet_ep->context_av_count)
 		return -FI_EBUSY;
 	if ((uet_ep->num_active_sends)) {
 		UET_API_ERR("Outstanding sends associated with EP being closed");
@@ -7999,17 +8010,13 @@ int uet_cq_close(uet_cq_handle_t cq_handle)
 	return FI_SUCCESS;
 }
 
-int uet_av_insert(uet_domain_handle_t domain_handle,
-		  struct uet_addr *uet_addr,
-		  uet_addr_handle_t *addr_handle)
+static int uet_av_insert_common(struct uet_domain *uet_dom,
+				struct uet_ep *context, struct uet_addr *uet_addr,
+				uet_addr_handle_t *addr_handle)
 {
 	int rc;
-	struct uet_instance *uet;
-	struct uet_domain *uet_dom;
+	struct uet_instance *uet = uet_dom->uet;
 	struct uet_av_entry *av_entry;
-
-	uet_dom = (struct uet_domain *) domain_handle;
-	uet = uet_dom->uet;
 
 	/* allocate memory for av object */
 	av_entry = calloc(1, sizeof(struct uet_av_entry));
@@ -8020,6 +8027,7 @@ int uet_av_insert(uet_domain_handle_t domain_handle,
 
 	/* initialize av entry */
 	av_entry->addr = uet_addr;
+	av_entry->context = context;
 	rc = uet_nic_get_nh(UET_NIC(uet), &uet_addr->fa,
 			    uet_addr_is_ipv6(uet_addr),
 			    av_entry->nh_mac_addr);
@@ -8027,11 +8035,32 @@ int uet_av_insert(uet_domain_handle_t domain_handle,
 		av_entry->flags |= UET_NH_MAC_ADDR_V;
 
 	/* insert av object in list of av entries for domain */
-	uet_dom = (struct uet_domain *) domain_handle;
 	uet_av_entry_insert(uet_dom, av_entry);
+	if (context)
+		context->context_av_count++;
 
 	*addr_handle = av_entry;
 	return FI_SUCCESS;
+}
+
+int uet_av_insert(uet_domain_handle_t domain_handle, struct uet_addr *uet_addr,
+		  uet_addr_handle_t *addr_handle)
+{
+	return uet_av_insert_common(domain_handle, NULL, uet_addr, addr_handle);
+}
+
+int uet_ep_context_av_insert(uet_ep_handle_t ep_handle, struct uet_addr *addr,
+			     uet_addr_handle_t *addr_handle)
+{
+	struct uet_ep *ep = ep_handle;
+
+	if (!ep || !ep->parent || !addr || !addr_handle ||
+	    uet_addr_is_ipv6(addr) || addr->fa.v4 != ep->peer_ipv4)
+		return -FI_EINVAL;
+	if (ep->parent->ever_enabled)
+		return -FI_EBUSY;
+
+	return uet_av_insert_common(ep->uet_domain, ep, addr, addr_handle);
 }
 
 int uet_av_remove(uet_addr_handle_t addr_handle)
@@ -8046,6 +8075,8 @@ int uet_av_remove(uet_addr_handle_t addr_handle)
 		return -FI_EBUSY;
 	}
 
+	if (av_entry->context)
+		av_entry->context->context_av_count--;
 	uet_av_entry_free(av_entry);
 
 	return -FI_SUCCESS;

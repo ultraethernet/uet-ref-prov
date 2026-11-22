@@ -735,6 +735,14 @@ int uet_getname(uet_ep_handle_t ep_handle, struct uet_addr *uet_addr);
 int uet_ep_context_open(uet_ep_handle_t parent, uint32_t peer_ipv4,
 			uet_ep_handle_t *context);
 /*
+ * Create a destination handle for SEND on this context only. Insert on the
+ * control thread before enabling any context. Keep addr valid and unchanged
+ * until uet_av_remove(). Stop ingress and drain and stop the worker before
+ * removing its handles. Remove all handles before closing the context.
+ */
+int uet_ep_context_av_insert(uet_ep_handle_t context, struct uet_addr *addr,
+			     uet_addr_handle_t *addr_handle);
+/*
  * Identify the context that should receive an IPv4 Ethernet frame. Ingress
  * may call this concurrently on multiple threads. The returned handle stays
  * valid until the host stops ingress and closes the contexts.

@@ -342,6 +342,7 @@ struct uet_rx_desc_ring_entry {
 struct uet_av_entry {
 	struct dlist_entry av_list_entry; /* for insert in list of av entries */
 	struct uet_addr *addr;    /* ptr to uet addr entry is associated with */
+	struct uet_ep *context;  /* exclusive owner, or NULL for ordinary entries */
 #define UET_NH_MAC_ADDR_V (1 << 0)  /* flag bit indicating next-hop mac valid */
 	uint16_t flags;
 	uint8_t nh_mac_addr[ETH_ALEN];                /* next-hop mac address */
@@ -689,6 +690,7 @@ struct uet_ep {
 	unsigned int context_slots;
 	unsigned int live_contexts;
 	struct uet_context_slot *peer_contexts;
+	size_t context_av_count;
 	pthread_mutex_t data_lock;        /* lock for data path thread safety */
 	uet_ep_state_t ep_state;                         /* state of endpoint */
 	struct dlist_entry ep_list_entry;              /* endpoint list entry */
