@@ -232,11 +232,9 @@ struct uet_msgid_map {
 	struct uet_pdc *pdc;
 };
 
-/* The instance allocates wire IDs. Each context owns its active PDCs. */
+/* Each execution context owns a pool with a disjoint range of wire IDs. */
 struct uet_pds_pool {
-	pthread_mutex_t	lock;
 	struct dlist_entry	free;
-	struct uet_ep		*owners[UET_PDC_MAX];
 	struct uet_pdc	pdc[UET_PDC_MAX];
 };
 
@@ -698,22 +696,13 @@ static struct uet_pdc *uet_pdsm_alloc_pdc(struct uet_pds_state *state)
 	struct uet_pds_pool *pool = state->pool;
 	struct uet_pdc *pdc;
 
-	/* Protect allocation only. The selected worker owns the PDC state. */
-	if (state->context)
-		pthread_mutex_lock(&pool->lock);
 	pdc = dlist_first_entry_or_null(&pool->free, struct uet_pdc, node);
-	if (pdc)
-		dlist_remove(&pdc->node);
-	if (state->context)
-		pthread_mutex_unlock(&pool->lock);
 	if (!pdc)
 		return NULL;
 
+	dlist_remove(&pdc->node);
 	pdc->owner = state;
 	dlist_insert_tail(&pdc->node, &state->pdc_alloc_head);
-	if (state->context)
-		__atomic_store_n(&pool->owners[pdc->pdc_id], state->context,
-				 __ATOMIC_RELEASE);
 	return pdc;
 }
 
@@ -806,8 +795,6 @@ static void uet_pdsm_free_pdc(struct uet_pdc *pdc)
 	struct uet_pds_state *state = pdc->owner;
 	struct uet_pds_pool *pool = state->pool;
 
-	if (state->context)
-		__atomic_store_n(&pool->owners[pdc->pdc_id], NULL, __ATOMIC_RELEASE);
 	UET_PDS_DBG("freeing PDC %u (state=UNALLOC) (is_initiator=%d)",
 		    pdc->pdc_id, pdc->is_initiator);
 
@@ -833,11 +820,7 @@ static void uet_pdsm_free_pdc(struct uet_pdc *pdc)
 
 	/* free a PDC by inserting to the tail of the free list */
 	dlist_remove(&pdc->node);
-	if (state->context)
-		pthread_mutex_lock(&pool->lock);
 	dlist_insert_tail(&pdc->node, &pool->free);
-	if (state->context)
-		pthread_mutex_unlock(&pool->lock);
 }
 
 /*
@@ -1263,24 +1246,21 @@ static int uet_pdsm_get_pdc(struct uet_pds_state *state, uint16_t pdc_id,
 			    struct uet_pdc **out_pdc)
 {
 	struct uet_pdc *pdc;
+	unsigned int slot = pdc_id % UET_PDC_MAX;
+	unsigned int owner = state->context ? state->context->context_slot : 0;
 	*out_pdc = NULL;
 
-	if (pdc_id == 0) {
+	if (slot == 0) {
 		UET_PDS_ERR("invalid PDC %u (reserved)", pdc_id);
 		return -EINVAL;
 	}
 
-	if (pdc_id >= UET_PDC_MAX) {
+	if (pdc_id / UET_PDC_MAX != owner) {
 		UET_PDS_ERR("invalid PDC %u (range)", pdc_id);
 		return -EINVAL;
 	}
 
-	if (state->context &&
-	    __atomic_load_n(&state->pool->owners[pdc_id], __ATOMIC_ACQUIRE) !=
-		    state->context)
-		return -EINVAL;
-
-	pdc = &state->pool->pdc[pdc_id];
+	pdc = &state->pool->pdc[slot];
 
 	if (pdc->state == PDC_STATE_UNALLOC) {
 		UET_PDS_ERR("invalid PDC %u (unalloc)", pdc_id);
@@ -1653,7 +1633,6 @@ static void uet_pds_pool_destroy(struct uet_pds_pool *pool)
 		if (pdc->rx_bm)
 			bm_destroy(pdc->rx_bm);
 	}
-	pthread_mutex_destroy(&pool->lock);
 	free(pool);
 }
 
@@ -1672,8 +1651,7 @@ static void uet_pdsm_destroy(struct uet_pds_state *state)
 			&state->pdc_alloc_head, struct uet_pdc, node);
 		uet_pdsm_free_pdc(pdc);
 	}
-	if (!state->context)
-		uet_pds_pool_destroy(state->pool);
+	uet_pds_pool_destroy(state->pool);
 	free(state);
 }
 
@@ -1690,20 +1668,16 @@ uet_pdsm_create(struct uet_pds_pool *pool, struct uet_ep *context)
 	return state;
 }
 
-static struct uet_pds_pool *uet_pds_pool_create(void)
+static struct uet_pds_pool *uet_pds_pool_create(uint16_t base)
 {
 	struct uet_pds_pool *pool = calloc(1, sizeof(*pool));
 
 	if (!pool)
 		return NULL;
-	if (pthread_mutex_init(&pool->lock, NULL)) {
-		free(pool);
-		return NULL;
-	}
 	dlist_init(&pool->free);
 	for (uint16_t id = 1; id < UET_PDC_MAX; id++) {
 		struct uet_pdc *pdc = &pool->pdc[id];
-		pdc->pdc_id = id;
+		pdc->pdc_id = base + id;
 		pdc->tx_bm = bm_create(UET_DEFAULT_MP_RANGE);
 		pdc->rx_bm = bm_create(UET_DEFAULT_MP_RANGE);
 		if (!pdc->tx_bm || !pdc->rx_bm) {
@@ -1801,7 +1775,7 @@ int uet_pds_initialize(struct uet_instance *uet)
 	}
 
 	/* PDCID 0 is reserved. */
-	pool = uet_pds_pool_create();
+	pool = uet_pds_pool_create(0);
 	if (!pool)
 		return -ENOMEM;
 	uet->pds.state = uet_pdsm_create(pool, NULL);
@@ -1832,9 +1806,18 @@ void uet_pds_finalize(struct uet_instance *uet)
 
 int uet_pds_ep_initialize(struct uet_ep *ep)
 {
-	struct uet_pds_state *state = ep->uet_domain->uet->pds.state;
+	struct uet_pds_pool *pool;
 
-	ep->pds = ep->parent ? uet_pdsm_create(state->pool, ep) : state;
+	if (!ep->parent) {
+		ep->pds = ep->uet_domain->uet->pds.state;
+		return 0;
+	}
+	pool = uet_pds_pool_create(ep->context_slot * UET_PDC_MAX);
+	if (!pool)
+		return -ENOMEM;
+	ep->pds = uet_pdsm_create(pool, ep);
+	if (!ep->pds)
+		uet_pds_pool_destroy(pool);
 	return ep->pds ? 0 : -ENOMEM;
 }
 
@@ -4376,6 +4359,40 @@ exit_err:
 }
 
 /* Consume a frame. PDS may keep it in the receive window. */
+static struct uet_ep *uet_pds_context_owner(struct uet_ep *parent,
+					    const struct uet_parsed_pkt *pp)
+{
+	const struct iphdr *ip = pp->ip;
+	uint32_t peer = ntohl(ip->saddr);
+	struct uet_ep *matches[UET_MAX_PEER_CONTEXTS];
+	unsigned int count = 0;
+
+	/* In setup requests the destination field is a SYN offset. */
+	if (pp->pds_type == UET_PDS_TYPE_ROD_REQ &&
+	    (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)) {
+		uint32_t source_id = pp->pds_spdcid;
+		uint32_t hash = peer ^ (peer >> 16) ^ source_id ^
+				(source_id >> 6) ^ (source_id >> 12);
+
+		if (!source_id)
+			return NULL;
+		for (unsigned int i = 0; i < parent->context_slots; i++) {
+			struct uet_context_slot *slot = &parent->peer_contexts[i];
+
+			/* Keep closed slots in the hash to preserve other owners. */
+			if (slot->peer_ipv4 == peer)
+				matches[count++] = slot->ep;
+		}
+		return count ? matches[hash % count] : NULL;
+	}
+
+	unsigned int owner = pp->pds_dpdcid / UET_PDC_MAX;
+	if (owner >= parent->context_slots || pp->pds_dpdcid % UET_PDC_MAX == 0)
+		return NULL;
+	struct uet_ep *ep = parent->peer_contexts[owner].ep;
+	return ep && ep->peer_ipv4 == peer ? ep : NULL;
+}
+
 static int uet_pds_rx_frame(struct uet_instance *uet, struct uet_ep *ep,
 			    uint8_t *pkt, size_t pkt_len)
 {
@@ -4411,6 +4428,7 @@ static int uet_pds_rx_frame(struct uet_instance *uet, struct uet_ep *ep,
 		if (pp.sec || pp.is_ipv6 || ip->ihl != 5 ||
 		    ntohl(ip->saddr) != ep->peer_ipv4 ||
 		    ntohl(ip->daddr) != ep->ip_addr.v4 || pkt_is_rd_rsp ||
+		    uet_pds_context_owner(ep->parent, &pp) != ep ||
 		    !(pkt_is_ack || pkt_is_nack || pkt_is_ctrl ||
 		      (pp.pds_type == UET_PDS_TYPE_ROD_REQ &&
 		       pp.next_hdr == UET_HDR_REQ_STD && pp.ses_opcode == UET_SEND &&
@@ -4512,7 +4530,7 @@ int uet_ep_context_route(uet_ep_handle_t ep_handle, void *frame, size_t len,
 			 uet_ep_handle_t *context)
 {
 	struct uet_ep *parent = ep_handle;
-	struct uet_ep *ep = NULL;
+	struct uet_ep *ep;
 	struct uet_instance *uet;
 	struct uet_parsed_pkt pp;
 	const struct iphdr *ip;
@@ -4527,20 +4545,8 @@ int uet_ep_context_route(uet_ep_handle_t ep_handle, void *frame, size_t len,
 	if (ip->ihl != 5 || ntohl(ip->daddr) != parent->ip_addr.v4)
 		return -EINVAL;
 
-	/* On SYN, the destination-PDC field carries the SYN offset. */
-	if (pp.pds_type == UET_PDS_TYPE_ROD_REQ &&
-	    (pp.pds_flags & UET_PDS_REQ_FLAGS_SYN)) {
-		for (unsigned int i = 0; i < parent->context_slots; i++) {
-			ep = parent->peer_contexts[i];
-			if (ep && ep->peer_ipv4 == ntohl(ip->saddr))
-				break;
-			ep = NULL;
-		}
-	} else if (pp.pds_dpdcid && pp.pds_dpdcid < UET_PDC_MAX) {
-		struct uet_pds_pool *pool = uet->pds.state->pool;
-		ep = __atomic_load_n(&pool->owners[pp.pds_dpdcid], __ATOMIC_ACQUIRE);
-	}
-	if (!ep || ep->peer_ipv4 != ntohl(ip->saddr))
+	ep = uet_pds_context_owner(parent, &pp);
+	if (!ep)
 		return -ENOENT;
 	*context = ep;
 	return 0;

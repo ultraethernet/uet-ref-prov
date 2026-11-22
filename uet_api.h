@@ -721,11 +721,14 @@ int uet_getname(uet_ep_handle_t ep_handle, struct uet_addr *uet_addr);
 
 /*
  * Experimental PDS IPv4, ordered, eager SEND/RECV only.
- * Open up to two peer contexts on a fresh, disabled endpoint in an otherwise
+ * Open up to 64 peer contexts on a fresh, disabled endpoint in an otherwise
  * empty instance. The parent owns the address. Open and close on the control
  * thread, with workers stopped. One caller per context while active.
+ * Open all contexts before enabling any of them. Contexts may share a peer
+ * address. The source PDCID selects the context of a new incoming PDC, and
+ * the destination PDCID selects established traffic.
  * The host supplies preclassified frames and drives each context's progress.
- * The NIC TX backend must permit concurrent TX to distinct remote peers.
+ * The NIC TX backend must permit concurrent TX from contexts sharing a peer.
  * peer_ipv4 is in host byte order. RX borrows the full Ethernet frame for
  * the duration of the call. Stop ingress and drain before closing contexts.
  */

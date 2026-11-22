@@ -627,15 +627,16 @@ static int uet_alloc_msg_id(struct uet_ep *ep, uint16_t *msg_id)
 	uint16_t next_msg_id;
 	uint8_t *state, prev_state;
 
-	/* Two disjoint halves of the instance ID space. The parent cannot
-	 * submit work and the instance admits no other endpoints.
+	/* Each context owns a disjoint range of the instance ID space.
+	 * The parent cannot submit work and the instance admits no other endpoints.
 	 */
 	if (ep->parent) {
-		uint32_t base = ep->context_msg_id_limit - (UET_MAX_MSG_ID + 1U) / 2;
+		uint32_t base = ep->context_slot * UET_CONTEXT_MSG_IDS;
+		uint32_t limit = base + UET_CONTEXT_MSG_IDS;
 
-		for (uint32_t i = base; i < ep->context_msg_id_limit; i++) {
+		for (uint32_t i = base; i < limit; i++) {
 			uint32_t id = ep->next_context_msg_id++;
-			if (ep->next_context_msg_id == ep->context_msg_id_limit)
+			if (ep->next_context_msg_id == limit)
 				ep->next_context_msg_id = base;
 			if (uet->msg_id_cb.state[id] == UET_MSG_ID_AVAILABLE) {
 				uet->msg_id_cb.state[id] = UET_MSG_ID_ALLOCATED;
@@ -2170,9 +2171,10 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 	pds->downcall.ep_finalize(uet_ep);
 
 	if (uet_ep->parent) {
-		uet_ep->parent->peer_contexts[uet_ep->context_slot] = NULL;
+		uet_ep->parent->peer_contexts[uet_ep->context_slot].ep = NULL;
 		uet_ep->parent->live_contexts--;
 	} else {
+		free(uet_ep->peer_contexts);
 		item = &uet_ep->ep_list_entry;
 		uet_rw_lock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
 		dlist_remove(item);
@@ -7276,6 +7278,7 @@ static int uet_endpoint_create(struct uet_ep *parent,
 
 	uet_ep->parent = parent;
 	if (parent) {
+		uet_ep->context_slot = parent->context_slots;
 		uet_ep->uet_addr = parent->uet_addr;
 		uet_ep->job_id = parent->job_id;
 		uet_ep->absolute = parent->absolute;
@@ -7511,11 +7514,14 @@ int uet_ep_context_open(uet_ep_handle_t ep_handle, uint32_t peer_ipv4,
 	    getenv("UET_IMPAIRMENT_SHIM"))
 		return -FI_ENOSYS;
 	slot = parent->context_slots;
-	if (slot >= sizeof(parent->peer_contexts) / sizeof(parent->peer_contexts[0]))
+	if (slot == UET_MAX_PEER_CONTEXTS)
 		return -FI_ENOSPC;
-	if (slot && parent->peer_contexts[0] &&
-	    parent->peer_contexts[0]->peer_ipv4 == peer_ipv4)
-		return -FI_EADDRINUSE;
+	if (!parent->peer_contexts) {
+		parent->peer_contexts = calloc(UET_MAX_PEER_CONTEXTS,
+					       sizeof(*parent->peer_contexts));
+		if (!parent->peer_contexts)
+			return -FI_ENOMEM;
+	}
 
 	rc = uet_endpoint_create(parent, parent->uet_domain, parent->info, NULL, NULL,
 				 context
@@ -7526,11 +7532,9 @@ int uet_ep_context_open(uet_ep_handle_t ep_handle, uint32_t peer_ipv4,
 	if (rc)
 		return rc;
 	ep = *context;
-	ep->context_slot = slot;
 	ep->peer_ipv4 = peer_ipv4;
-	ep->next_context_msg_id = slot * ((UET_MAX_MSG_ID + 1U) / 2);
-	ep->context_msg_id_limit = ep->next_context_msg_id + (UET_MAX_MSG_ID + 1U) / 2;
-	parent->peer_contexts[slot] = ep;
+	ep->next_context_msg_id = slot * UET_CONTEXT_MSG_IDS;
+	parent->peer_contexts[slot] = (struct uet_context_slot){ ep, peer_ipv4 };
 	parent->context_slots++;
 	parent->live_contexts++;
 	uet->context_parent = parent;
@@ -7675,6 +7679,8 @@ int uet_ep_enable(uet_ep_handle_t ep_handle)
 		return -FI_EBUSY;
 	uet_ep->ep_state = UET_EP_ENABLED;
 	uet_ep->ever_enabled = true;
+	if (uet_ep->parent)
+		uet_ep->parent->ever_enabled = true;
 
 	return FI_SUCCESS;
 }
