@@ -686,6 +686,7 @@ struct uet_ep {
 	unsigned int context_slot;
 	uint32_t peer_ipv4;              /* host order, immutable after open */
 	uint32_t next_context_msg_id;
+	unsigned int retx_seed;          /* retry jitter on the owning worker */
 	bool ever_enabled;
 	unsigned int context_slots;
 	unsigned int live_contexts;

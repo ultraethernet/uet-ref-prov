@@ -32,8 +32,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -1735,13 +1735,14 @@ static void uet_tx_desc_set_err(struct uet_tx_desc *tx_desc, int err_code,
 /* initiate message retransmission */
 static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 {
+	struct uet_ep *ep = tx_desc->uet_ep;
 	uint32_t max_retx;
 	time_t backoff_range, backoff_delta;
 	struct uet_av_entry *av_entry;
 
 	/* check for max retransmits */
 	tx_desc->retransmit_cnt++;
-	max_retx = tx_desc->uet_ep->uet_domain->uet->max_msg_retransmits;
+	max_retx = ep->uet_domain->uet->max_msg_retransmits;
 	if ((max_retx != UET_MSG_RETRANSMIT_MAX_INFINITY) &&
 	    (tx_desc->retransmit_cnt > max_retx)) {
 		uet_tx_desc_set_err(tx_desc, FI_EIO,
@@ -1760,9 +1761,11 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 	if (delay_retx) {
 		if ((max_retx == UET_MSG_RETRANSMIT_MAX_INFINITY) ||
 		    (tx_desc->retransmit_cnt == 1)) {
+			long jitter = ep->parent ? rand_r(&ep->retx_seed) : lrand48();
+
 			backoff_range = (tx_desc->backoff_max -
 					 tx_desc->backoff_min) + 1;
-			backoff_delta = ((time_t) lrand48()) % backoff_range;
+			backoff_delta = (time_t)jitter % backoff_range;
 			tx_desc->backoff = tx_desc->backoff_min + backoff_delta;
 		} else
 			/* exponential backoff */
@@ -7512,6 +7515,7 @@ int uet_ep_context_open(uet_ep_handle_t ep_handle, uint32_t peer_ipv4,
 	struct uet_ep *parent = ep_handle, *ep;
 	struct uet_instance *uet;
 	unsigned int slot;
+	time_t seed;
 	int rc;
 
 	if (!parent || parent->parent || !context || !peer_ipv4)
@@ -7548,6 +7552,9 @@ int uet_ep_context_open(uet_ep_handle_t ep_handle, uint32_t peer_ipv4,
 	ep = *context;
 	ep->peer_ipv4 = peer_ipv4;
 	ep->next_context_msg_id = slot * UET_CONTEXT_MSG_IDS;
+	uet_gettime(&seed);
+	ep->retx_seed = ((unsigned int)seed * UET_MAX_PEER_CONTEXTS + slot) ^
+		       parent->ip_addr.v4;
 	parent->peer_contexts[slot] = (struct uet_context_slot){ ep, peer_ipv4 };
 	parent->context_slots++;
 	parent->live_contexts++;
