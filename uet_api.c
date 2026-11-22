@@ -2188,12 +2188,10 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 		uet_rw_lock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
 		dlist_remove(item);
 		uet_rw_unlock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
+		pthread_mutex_destroy(&uet_ep->data_lock);
 	}
 
-	pthread_mutex_destroy(&uet_ep->data_lock);
-
 	free(uet_ep);
-	uet_ep = NULL; /* To prevent use after free */
 }
 
 /* free resources associated with all endpoints of a domain */
@@ -2206,9 +2204,14 @@ static void uet_ep_free_all(struct uet_domain *uet_dom)
 	dlist_foreach(head, item) {
 		uet_ep = container_of(item, struct uet_ep,
 				      ep_list_entry);
-		dlist_remove(item);
-		item = head;
+		for (unsigned int i = 0; i < uet_ep->context_slots; i++) {
+			struct uet_ep *context = uet_ep->peer_contexts[i].ep;
+
+			if (context)
+				uet_ep_free(context);
+		}
 		uet_ep_free(uet_ep);
+		item = head;
 	}
 }
 
@@ -7280,13 +7283,6 @@ static int uet_endpoint_create(struct uet_ep *parent,
 		goto err_exit;
 	}
 
-	rc = pthread_mutex_init(&uet_ep->data_lock, NULL);
-	if (rc != 0) {
-		rc = -FI_EOTHER;
-		goto err_exit;
-	}
-	data_lock_initialized = true;
-
 	uet_ep->parent = parent;
 	if (parent) {
 		uet_ep->context_slot = parent->context_slots;
@@ -7296,6 +7292,13 @@ static int uet_endpoint_create(struct uet_ep *parent,
 		uet_ep->max_payload_len = parent->max_payload_len;
 		goto init_queues;
 	}
+
+	rc = pthread_mutex_init(&uet_ep->data_lock, NULL);
+	if (rc != 0) {
+		rc = -FI_EOTHER;
+		goto err_exit;
+	}
+	data_lock_initialized = true;
 
 	/* init ep object */
 	memcpy(&uet_ep->uet_addr, info->src_addr, info->src_addrlen);
@@ -7689,9 +7692,10 @@ int uet_ep_enable(uet_ep_handle_t ep_handle)
 	if (uet_ep->context_slots)
 		return -FI_EBUSY;
 	uet_ep->ep_state = UET_EP_ENABLED;
-	uet_ep->ever_enabled = true;
 	if (uet_ep->parent)
 		uet_ep->parent->ever_enabled = true;
+	else
+		uet_ep->ever_enabled = true;
 
 	return FI_SUCCESS;
 }
@@ -7842,7 +7846,7 @@ uint32_t uet_cq_read_src_id(uet_cq_handle_t cq_handle)
  * packet through the PDS, drives pending transmits, and retries deferred
  * transmit messages.
  *
- * NOTE: the caller MUST hold uet_ep->data_lock
+ * The caller must own the context or hold the ordinary endpoint's data lock.
  */
 static void uet_ep_progress_locked(struct uet_ep *uet_ep)
 {

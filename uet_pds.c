@@ -4358,7 +4358,6 @@ exit_err:
 	return rc;
 }
 
-/* Consume a frame. PDS may keep it in the receive window. */
 static struct uet_ep *uet_pds_context_owner(struct uet_ep *parent,
 					    const struct uet_parsed_pkt *pp)
 {
@@ -4393,6 +4392,7 @@ static struct uet_ep *uet_pds_context_owner(struct uet_ep *parent,
 	return ep && ep->peer_ipv4 == peer ? ep : NULL;
 }
 
+/* Consume a frame. PDS may keep it in the receive window. */
 static int uet_pds_rx_frame(struct uet_instance *uet, struct uet_ep *ep,
 			    uint8_t *pkt, size_t pkt_len)
 {
