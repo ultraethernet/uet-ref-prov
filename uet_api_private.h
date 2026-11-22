@@ -35,6 +35,8 @@
 #endif
 
 #define UET_MAX_MSG_ID		0xffff
+#define UET_MAX_PEER_CONTEXTS	64
+#define UET_CONTEXT_MSG_IDS	((UET_MAX_MSG_ID + 1U) / UET_MAX_PEER_CONTEXTS)
 #define UET_MAX_MSG_SIZE	(0xffffffff - 1)
 
 /*
@@ -340,6 +342,7 @@ struct uet_rx_desc_ring_entry {
 struct uet_av_entry {
 	struct dlist_entry av_list_entry; /* for insert in list of av entries */
 	struct uet_addr *addr;    /* ptr to uet addr entry is associated with */
+	struct uet_ep *context;  /* exclusive owner, or NULL for ordinary entries */
 #define UET_NH_MAC_ADDR_V (1 << 0)  /* flag bit indicating next-hop mac valid */
 	uint16_t flags;
 	uint8_t nh_mac_addr[ETH_ALEN];                /* next-hop mac address */
@@ -568,6 +571,7 @@ struct uet_ep; /* forward reference */
 
 /* control block for uet instance */
 struct uet_instance {
+	struct uet_ep *context_parent; /* experimental shared endpoint */
 	     /* Optional address translation function for memory-region page  */
 	     /* lists. NULL means the identity. See uet_set_dma_xlate().      */
 	uet_dma_xlate_fn dma_xlate;
@@ -668,8 +672,26 @@ struct uet_cq {
 	uint32_t last_src_id;     /* SourceID of the most recently read entry */
 };
 
+struct uet_context_slot {
+	struct uet_ep *ep;
+	uint32_t peer_ipv4;
+};
+
 /* endpoint control block */
 struct uet_ep {
+	/* Only the parent is registered as an endpoint. A context reuses the
+	 * ordinary descriptor/CQ layout and carries the parent's wire address.
+	 */
+	struct uet_ep *parent;
+	unsigned int context_slot;
+	uint32_t peer_ipv4;              /* host order, immutable after open */
+	uint32_t next_context_msg_id;
+	unsigned int retx_seed;          /* retry jitter on the owning worker */
+	bool ever_enabled;
+	unsigned int context_slots;
+	unsigned int live_contexts;
+	struct uet_context_slot *peer_contexts;
+	size_t context_av_count;
 	pthread_mutex_t data_lock;        /* lock for data path thread safety */
 	uet_ep_state_t ep_state;                         /* state of endpoint */
 	struct dlist_entry ep_list_entry;              /* endpoint list entry */

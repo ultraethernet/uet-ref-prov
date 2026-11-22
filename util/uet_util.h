@@ -60,6 +60,7 @@ struct uet_rw_lock {
 /* parsed uet packet                                         */
 /*   - ptr's to headers can be NULL if header is not present */
 struct uet_parsed_pkt {
+	struct uet_ep *rx_context; /* optional, already validated by ingress */
 	uint16_t pkt_len;                  /* total length of received packet */
 	void *eth;
 	uint16_t eth_len;

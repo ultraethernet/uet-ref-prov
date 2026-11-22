@@ -720,6 +720,38 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 int uet_getname(uet_ep_handle_t ep_handle, struct uet_addr *uet_addr);
 
 /*
+ * Experimental PDS IPv4, ordered, eager SEND/RECV only.
+ * Open up to 64 peer contexts on a fresh, disabled endpoint in an otherwise
+ * empty instance. The parent owns the address. Open and close on the control
+ * thread, with workers stopped. One caller per context while active.
+ * Open all contexts before enabling any of them. Contexts may share a peer
+ * address. The source PDCID selects the context of a new incoming PDC, and
+ * the destination PDCID selects established traffic.
+ * The host supplies preclassified frames and drives each context's progress.
+ * The NIC TX backend must permit concurrent TX from contexts sharing a peer.
+ * peer_ipv4 is in host byte order. RX borrows the full Ethernet frame for
+ * the duration of the call. Stop ingress and drain before closing contexts.
+ */
+int uet_ep_context_open(uet_ep_handle_t parent, uint32_t peer_ipv4,
+			uet_ep_handle_t *context);
+/*
+ * Create a destination handle for SEND on this context only. Insert on the
+ * control thread before enabling any context. Keep addr valid and unchanged
+ * until uet_av_remove(). Stop ingress and drain and stop the worker before
+ * removing its handles. Remove all handles before closing the context.
+ */
+int uet_ep_context_av_insert(uet_ep_handle_t context, struct uet_addr *addr,
+			     uet_addr_handle_t *addr_handle);
+/*
+ * Identify the context that should receive an IPv4 Ethernet frame. Ingress
+ * may call this concurrently on multiple threads. The returned handle stays
+ * valid until the host stops ingress and closes the contexts.
+ */
+int uet_ep_context_route(uet_ep_handle_t parent, void *frame, size_t len,
+			 uet_ep_handle_t *context);
+int uet_ep_context_rx(uet_ep_handle_t context, const void *frame, size_t len);
+
+/*
  * called when a scalable endpoint is created
  *
  * parms:

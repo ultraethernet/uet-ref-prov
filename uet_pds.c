@@ -168,6 +168,7 @@ struct uet_pdc_tgt_key {
 };
 
 struct uet_pdc {
+	struct uet_pds_state *owner;
 	struct dlist_entry  node;
 
 	pdc_state_t         state;
@@ -231,11 +232,16 @@ struct uet_msgid_map {
 	struct uet_pdc *pdc;
 };
 
+/* Each execution context owns a pool with a disjoint range of wire IDs. */
+struct uet_pds_pool {
+	struct dlist_entry	free;
+	struct uet_pdc	pdc[UET_PDC_MAX];
+};
+
 struct uet_pds_state {
-	bool                  ready;
-	struct uet_pdc        pdc[UET_PDC_MAX];
+	struct uet_pds_pool   *pool;
+	struct uet_ep         *context; /* NULL for the ordinary instance path */
 	struct dlist_entry    pdc_alloc_head;
-	struct dlist_entry    pdc_free_head;
 	struct uet_pdc       *pdc_ini_ht; /* key=[type|jobid|srcip|dstip|tc] */
 	struct uet_pdc       *pdc_tgt_ht; /* key=[srcip|dstip|spdcid] */
 	struct uet_msgid_map *pdc_msgid_ht; /* key=[msg_id] */
@@ -246,7 +252,11 @@ struct uet_pds_state {
 	uint32_t              pdc_close_in_err_cnt; /* PDCs closed in error */
 };
 
-static struct uet_pds_state pds_state;
+static inline struct uet_pds_state *
+uet_pds_rx_state(struct uet_instance *uet, const struct uet_parsed_pkt *pp)
+{
+	return pp->rx_context ? pp->rx_context->pds : uet->pds.state;
+}
 
 static int pds_pdc_close_thresh = UET_PDC_CLOSE_THRESH;
 static int pds_pkt_drop_thresh = UET_PKT_DROP_THRESH;
@@ -295,14 +305,6 @@ static inline uint32_t uet_pds_rand_start_psn(void)
 
 	return psn;
 }
-
-#define PDS_GO()                                          \
-	do {                                              \
-		if (pds_state.ready != true) {            \
-			UET_PDS_ERR("PDS is not ready!"); \
-			exit(1);                          \
-		}                                         \
-	} while (0)
 
 #define PSN_IN_MPR(psn, base_psn) \
 	((uint32_t)((psn) - (base_psn)) < UET_DEFAULT_MP_RANGE)
@@ -689,22 +691,18 @@ static void uet_init_pdc(struct uet_pdc *pdc,
 	pdc->rx_bm_base_psn = 0;
 }
 
-static struct uet_pdc *uet_pdsm_alloc_pdc(void)
+static struct uet_pdc *uet_pdsm_alloc_pdc(struct uet_pds_state *state)
 {
+	struct uet_pds_pool *pool = state->pool;
 	struct uet_pdc *pdc;
 
-	PDS_GO();
-
-	/* allocate a new PDC from the head of the free list */
-	pdc = dlist_first_entry_or_null(&pds_state.pdc_free_head,
-					struct uet_pdc, node);
-	if (pdc == NULL)
+	pdc = dlist_first_entry_or_null(&pool->free, struct uet_pdc, node);
+	if (!pdc)
 		return NULL;
 
 	dlist_remove(&pdc->node);
-
-	dlist_insert_tail(&pdc->node, &pds_state.pdc_alloc_head);
-
+	pdc->owner = state;
+	dlist_insert_tail(&pdc->node, &state->pdc_alloc_head);
 	return pdc;
 }
 
@@ -794,16 +792,17 @@ static void uet_pdsm_free_pdc_pkts(struct uet_pdc *pdc)
 
 static void uet_pdsm_free_pdc(struct uet_pdc *pdc)
 {
-	PDS_GO();
+	struct uet_pds_state *state = pdc->owner;
+	struct uet_pds_pool *pool = state->pool;
 
 	UET_PDS_DBG("freeing PDC %u (state=UNALLOC) (is_initiator=%d)",
 		    pdc->pdc_id, pdc->is_initiator);
 
 	/* remove from hash tables */
 	if (pdc->is_initiator)
-		HASH_DELETE(pdc_ini_hh, pds_state.pdc_ini_ht, pdc);
+		HASH_DELETE(pdc_ini_hh, state->pdc_ini_ht, pdc);
 	else
-		HASH_DELETE(pdc_tgt_hh, pds_state.pdc_tgt_ht, pdc);
+		HASH_DELETE(pdc_tgt_hh, state->pdc_tgt_ht, pdc);
 
 	pdc->state = PDC_STATE_UNALLOC;
 
@@ -821,7 +820,7 @@ static void uet_pdsm_free_pdc(struct uet_pdc *pdc)
 
 	/* free a PDC by inserting to the tail of the free list */
 	dlist_remove(&pdc->node);
-	dlist_insert_tail(&pdc->node, &pds_state.pdc_free_head);
+	dlist_insert_tail(&pdc->node, &pool->free);
 }
 
 /*
@@ -859,17 +858,16 @@ static void uet_pdsm_drain_tx_pkts(struct uet_instance *uet,
 size_t uet_pds_drop_tx_pkts(struct uet_ep *uet_ep,
 			    uet_pkt_handle_t tx_pkt_handle)
 {
+	struct uet_pds_state *state = uet_ep->pds;
 	struct uet_pdc *pdc;
 	struct uet_pdc_pkt *pdc_pkt;
 	struct dlist_entry *pdc_tmp, *pkt_tmp;
 	size_t dropped = 0;
 
-	(void)uet_ep;	/* contexts are per-peer, not per-endpoint */
-
 	if (tx_pkt_handle == NULL)
 		return 0;
 
-	dlist_foreach_container_safe(&pds_state.pdc_alloc_head,
+	dlist_foreach_container_safe(&state->pdc_alloc_head,
 				     struct uet_pdc, pdc, node, pdc_tmp) {
 		dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
 					     struct uet_pdc_pkt, pdc_pkt,
@@ -889,7 +887,8 @@ size_t uet_pds_drop_tx_pkts(struct uet_ep *uet_ep,
 	}
 
 	/* RUDI keeps its outstanding requests off the contexts entirely */
-	dropped += uet_pds_rudi_drop_tx_pkts(tx_pkt_handle);
+	if (!uet_ep->parent)
+		dropped += uet_pds_rudi_drop_tx_pkts(tx_pkt_handle);
 
 	return dropped;
 }
@@ -898,14 +897,15 @@ size_t uet_pds_drop_tx_pkts(struct uet_ep *uet_ep,
 static void uet_pdsm_discard_pdc(struct uet_instance *uet,
 				 struct uet_pdc *pdc)
 {
+	struct uet_pds_state *state = pdc->owner;
 	struct uet_msgid_map *msgid_map, *msgid_tmp;
 
 	uet_pdsm_drain_tx_pkts(uet, pdc);
 
-	HASH_ITER(msgid_hh, pds_state.pdc_msgid_ht, msgid_map, msgid_tmp) {
+	HASH_ITER(msgid_hh, state->pdc_msgid_ht, msgid_map, msgid_tmp) {
 		if (msgid_map->pdc != pdc)
 			continue;
-		HASH_DELETE(msgid_hh, pds_state.pdc_msgid_ht, msgid_map);
+		HASH_DELETE(msgid_hh, state->pdc_msgid_ht, msgid_map);
 		free(msgid_map);
 	}
 
@@ -930,13 +930,12 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 					       struct uet_av_entry *av_entry,
 					       uet_pds_mode_t mode)
 {
+	struct uet_pds_state *state = uet_ep->pds;
 	struct uet_pdc_ini_key pdc_key;
 	struct uet_pdc *pdc;
 	struct uet_nic *nic = &uet_ep->uet_domain->uet->nic;
 	bool dst_is_ipv6 = uet_addr_is_ipv6(av_entry->addr);
 	struct uet_fa local_ip;
-
-	PDS_GO();
 
 	memset(&local_ip, 0, sizeof(local_ip));
 	if (dst_is_ipv6)
@@ -954,7 +953,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	memcpy(&pdc_key.src_ip, &local_ip, sizeof(struct uet_fa));
 	memcpy(&pdc_key.dst_ip, &av_entry->addr->fa, sizeof(struct uet_fa));
 
-	HASH_FIND(pdc_ini_hh, pds_state.pdc_ini_ht, &pdc_key,
+	HASH_FIND(pdc_ini_hh, state->pdc_ini_ht, &pdc_key,
 		  sizeof(pdc_key), pdc);
 	if (pdc) {
 		/*
@@ -978,7 +977,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	}
 
 	/* allocate a new PDC from the head of the free list */
-	pdc = uet_pdsm_alloc_pdc();
+	pdc = uet_pdsm_alloc_pdc(state);
 	if (!pdc) {
 		UET_PDS_ERR("no free PDCs available for initiator");
 		return NULL;
@@ -1025,7 +1024,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 
 	/* stick this PDC in the initiator hash table */
 	memcpy(&pdc->ini_hkey, &pdc_key, sizeof(pdc_key));
-	HASH_ADD(pdc_ini_hh, pds_state.pdc_ini_ht, ini_hkey,
+	HASH_ADD(pdc_ini_hh, state->pdc_ini_ht, ini_hkey,
 		 sizeof(pdc_key), pdc);
 
 	UET_PDS_DBG("allocated initiator PDC %u %s(state=SYN, start_psn=%u)",
@@ -1039,7 +1038,8 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	return pdc;
 }
 
-static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
+static int uet_pdsm_assign_tgt_pdc(struct uet_pds_state *state,
+			   struct uet_parsed_pkt *pp,
 				   struct uet_pdc **out_pdc,
 				   uet_pds_nack_code_t *nack_code,
 				   uint32_t *nack_payload)
@@ -1082,7 +1082,7 @@ static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
 	}
 	pdc_key.spdcid = pp->pds_spdcid; /* target side needs spdcid */
 
-	HASH_FIND(pdc_tgt_hh, pds_state.pdc_tgt_ht, &pdc_key,
+	HASH_FIND(pdc_tgt_hh, state->pdc_tgt_ht, &pdc_key,
 		  sizeof(pdc_key), pdc);
 	if (pdc) {
 		UET_PDS_DBG("lookup found target PDC %u", pdc->pdc_id);
@@ -1139,7 +1139,7 @@ static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
 		    pp->pds_spdcid, pp->pds_psn, pp->pds_syn_off);
 
 	/* allocate a new PDC from the head of the free list */
-	pdc = uet_pdsm_alloc_pdc();
+	pdc = uet_pdsm_alloc_pdc(state);
 	if (!pdc) {
 		UET_PDS_ERR("no free PDCs available for target");
 		*nack_code = UET_NACK_NO_PDC_AVAIL;
@@ -1210,7 +1210,7 @@ static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
 
 	/* stick this PDC in the target hash table */
 	memcpy(&pdc->tgt_hkey, &pdc_key, sizeof(pdc_key));
-	HASH_ADD(pdc_tgt_hh, pds_state.pdc_tgt_ht, tgt_hkey,
+	HASH_ADD(pdc_tgt_hh, state->pdc_tgt_ht, tgt_hkey,
 		 sizeof(pdc_key), pdc);
 
 	if (reject_pending) {
@@ -1241,24 +1241,26 @@ static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
 	return 0;
 }
 
-static int uet_pdsm_get_pdc(uint16_t pdc_id,
+static int uet_pdsm_get_pdc(struct uet_pds_state *state, uint16_t pdc_id,
 			    bool for_fwd,
 			    struct uet_pdc **out_pdc)
 {
 	struct uet_pdc *pdc;
+	unsigned int slot = pdc_id % UET_PDC_MAX;
+	unsigned int owner = state->context ? state->context->context_slot : 0;
 	*out_pdc = NULL;
 
-	if (pdc_id == 0) {
+	if (slot == 0) {
 		UET_PDS_ERR("invalid PDC %u (reserved)", pdc_id);
 		return -EINVAL;
 	}
 
-	if (pdc_id >= UET_PDC_MAX) {
+	if (pdc_id / UET_PDC_MAX != owner) {
 		UET_PDS_ERR("invalid PDC %u (range)", pdc_id);
 		return -EINVAL;
 	}
 
-	pdc = &pds_state.pdc[pdc_id];
+	pdc = &state->pool->pdc[slot];
 
 	if (pdc->state == PDC_STATE_UNALLOC) {
 		UET_PDS_ERR("invalid PDC %u (unalloc)", pdc_id);
@@ -1279,12 +1281,11 @@ static int uet_pdsm_get_pdc(uint16_t pdc_id,
 	return 0;
 }
 
-static int uet_pdsm_map_msgid_pdc(uint16_t msg_id,
+static int uet_pdsm_map_msgid_pdc(struct uet_pds_state *state,
+				 uint16_t msg_id,
 				  struct uet_pdc *pdc)
 {
 	struct uet_msgid_map *msgid_map;
-
-	PDS_GO();
 
 	/* TODO: pull msgid_map descriptor from a pool (not malloc) */
 	msgid_map = calloc(1, sizeof(*msgid_map));
@@ -1294,38 +1295,34 @@ static int uet_pdsm_map_msgid_pdc(uint16_t msg_id,
 	msgid_map->msg_id = msg_id;
 	msgid_map->pdc    = pdc;
 
-	HASH_ADD(msgid_hh, pds_state.pdc_msgid_ht, msg_id,
+	HASH_ADD(msgid_hh, state->pdc_msgid_ht, msg_id,
 		 sizeof(uint16_t), msgid_map);
 
 	return 0;
 }
 
-static int uet_pdsm_unmap_msgid_pdc(uint16_t msg_id)
+static int uet_pdsm_unmap_msgid_pdc(struct uet_pds_state *state, uint16_t msg_id)
 {
 	struct uet_msgid_map *msgid_map;
 
-	PDS_GO();
-
-	HASH_FIND(msgid_hh, pds_state.pdc_msgid_ht, &msg_id,
+	HASH_FIND(msgid_hh, state->pdc_msgid_ht, &msg_id,
 		  sizeof(uint16_t), msgid_map);
 	if (msgid_map == NULL) {
 		UET_PDS_ERR("msg_id %u not found", msg_id);
 		return -ENOKEY;
 	}
 
-	HASH_DELETE(msgid_hh, pds_state.pdc_msgid_ht, msgid_map);
+	HASH_DELETE(msgid_hh, state->pdc_msgid_ht, msgid_map);
 	free(msgid_map);
 
 	return 0;
 }
 
-static struct uet_pdc *uet_pdsm_get_msgid_pdc(uint16_t msg_id)
+static struct uet_pdc *uet_pdsm_get_msgid_pdc(struct uet_pds_state *state, uint16_t msg_id)
 {
 	struct uet_msgid_map *msgid_map;
 
-	PDS_GO();
-
-	HASH_FIND(msgid_hh, pds_state.pdc_msgid_ht, &msg_id,
+	HASH_FIND(msgid_hh, state->pdc_msgid_ht, &msg_id,
 		  sizeof(uint16_t), msgid_map);
 	if (msgid_map == NULL) {
 		UET_PDS_ERR("msg_id %u not found", msg_id);
@@ -1335,43 +1332,6 @@ static struct uet_pdc *uet_pdsm_get_msgid_pdc(uint16_t msg_id)
 	return msgid_map->pdc;
 }
 
-#if 0
-static struct uet_pdc *uet_pdsm_select_pdc_to_close(void)
-{
-	PDS_GO();
-
-	/* TODO: not implemented yet */
-	return NULL;
-}
-
-static int uet_pdsm_check_pkt(struct uet_pdc_pkt *pdc_pkt)
-{
-	PDS_GO();
-
-	/* TODO: not implemented yet */
-	return -ENOSYS;
-}
-
-static struct uet_pdc *uet_pdsm_check_pdc(struct uet_pdc_pkt *pdc_pkt)
-{
-	PDS_GO();
-
-	/* TODO:
-	 * - get PDC (from tpdcid)
-	 * - verify valid event
-	 */
-
-	return NULL;
-}
-
-static int uet_pdsm_check_nack_code(struct uet_pdc_pkt *pdc_pkt)
-{
-	PDS_GO();
-
-	/* TODO: not implemented yet */
-	return -ENOSYS;
-}
-#endif
 /****************************************************************************/
 /*            PDC Initiator and Target Common APIs                          */
 /****************************************************************************/
@@ -1664,12 +1624,76 @@ static int uet_pds_target_pdc_close(struct uet_instance *uet,
 /*                             SES->PDS APIs                                */
 /****************************************************************************/
 
+static void uet_pds_pool_destroy(struct uet_pds_pool *pool)
+{
+	for (uint16_t id = 1; id < UET_PDC_MAX; id++) {
+		struct uet_pdc *pdc = &pool->pdc[id];
+		if (pdc->tx_bm)
+			bm_destroy(pdc->tx_bm);
+		if (pdc->rx_bm)
+			bm_destroy(pdc->rx_bm);
+	}
+	free(pool);
+}
+
+static void uet_pdsm_destroy(struct uet_pds_state *state)
+{
+	struct uet_msgid_map *map, *next;
+
+	if (!state)
+		return;
+	HASH_ITER(msgid_hh, state->pdc_msgid_ht, map, next) {
+		HASH_DELETE(msgid_hh, state->pdc_msgid_ht, map);
+		free(map);
+	}
+	while (!dlist_empty(&state->pdc_alloc_head)) {
+		struct uet_pdc *pdc = dlist_first_entry_or_null(
+			&state->pdc_alloc_head, struct uet_pdc, node);
+		uet_pdsm_free_pdc(pdc);
+	}
+	uet_pds_pool_destroy(state->pool);
+	free(state);
+}
+
+static struct uet_pds_state *
+uet_pdsm_create(struct uet_pds_pool *pool, struct uet_ep *context)
+{
+	struct uet_pds_state *state = calloc(1, sizeof(*state));
+
+	if (state) {
+		state->pool = pool;
+		state->context = context;
+		dlist_init(&state->pdc_alloc_head);
+	}
+	return state;
+}
+
+static struct uet_pds_pool *uet_pds_pool_create(uint16_t base)
+{
+	struct uet_pds_pool *pool = calloc(1, sizeof(*pool));
+
+	if (!pool)
+		return NULL;
+	dlist_init(&pool->free);
+	for (uint16_t id = 1; id < UET_PDC_MAX; id++) {
+		struct uet_pdc *pdc = &pool->pdc[id];
+		pdc->pdc_id = base + id;
+		pdc->tx_bm = bm_create(UET_DEFAULT_MP_RANGE);
+		pdc->rx_bm = bm_create(UET_DEFAULT_MP_RANGE);
+		if (!pdc->tx_bm || !pdc->rx_bm) {
+			uet_pds_pool_destroy(pool);
+			return NULL;
+		}
+		dlist_insert_tail(&pdc->node, &pool->free);
+	}
+	return pool;
+}
+
 int uet_pds_initialize(struct uet_instance *uet)
 {
-	struct uet_pdc *pdc;
+	struct uet_pds_pool *pool;
 	char *pds_ack_type;
 	char *method;
-	int i;
 
 	/* seed random number generator for PDC close and packet drop */
 	srand(time(NULL));
@@ -1750,121 +1774,58 @@ int uet_pds_initialize(struct uet_instance *uet)
 		return -EINVAL;
 	}
 
-	memset(&pds_state, 0, sizeof(struct uet_pds_state));
-
-	/* initialize the PDCs */
-
-	dlist_init(&pds_state.pdc_alloc_head);
-	dlist_init(&pds_state.pdc_free_head);
-	pds_state.pdc_ini_ht = NULL;
-	pds_state.pdc_tgt_ht = NULL;
-	pds_state.pdc_msgid_ht = NULL;
-
-	/*
-	 * Reserve PDCID=0 according to UET spec 3.5.8.2.
-	 * Only PDCID [1, UET_PDC_MAX-1] are initialized and inserted into the
-	 * allocatable pools.
-	 */
-	for (i = 1; i < UET_PDC_MAX; i++) {
-		pdc = &pds_state.pdc[i];
-		pdc->state = PDC_STATE_UNALLOC;
-		pdc->pdc_id = i;
-
-		pdc->tx_bm = bm_create(UET_DEFAULT_MP_RANGE);
-		if (!pdc->tx_bm) {
-			UET_PDS_ERR("failed to create Tx bitmap");
-			return -ENOMEM; /* FIXME unwind and free PDCs */
-		}
-
-		pdc->rx_bm = bm_create(UET_DEFAULT_MP_RANGE);
-		if (!pdc->rx_bm) {
-			UET_PDS_ERR("failed to create Rx bitmap");
-			bm_destroy(pdc->tx_bm);
-			return -ENOMEM; /* FIXME unwind and free PDCs */
-		}
-
-		dlist_insert_tail(&pdc->node, &pds_state.pdc_free_head);
+	/* PDCID 0 is reserved. */
+	pool = uet_pds_pool_create(0);
+	if (!pool)
+		return -ENOMEM;
+	uet->pds.state = uet_pdsm_create(pool, NULL);
+	if (!uet->pds.state) {
+		uet_pds_pool_destroy(pool);
+		return -ENOMEM;
 	}
-
-	/* initialize the connectionless RUDI engine */
 	uet_pds_rudi_init();
-
-	/* good to go... */
-	pds_state.ready = true;
-
 	return 0;
 }
 
 void uet_pds_finalize(struct uet_instance *uet)
 {
-	struct uet_pdc *pdc;
-	struct uet_pdc_pkt *pdc_pkt;
+	struct uet_pds_state *state = uet->pds.state;
 
-	PDS_GO();
-
-	/* PDS health stats: DoS-reaped PENDING PDCs + PSN-range-driven closes */
+	if (!state)
+		return;
 	UET_PDS_INFO("%-30s : %u", "new_pdc_timeout_cnt",
-		     pds_state.new_pdc_timeout_cnt);
+		     state->new_pdc_timeout_cnt);
 	UET_PDS_INFO("%-30s : %u", "psn_range_close_cnt",
-		     pds_state.psn_range_close_cnt);
+		     state->psn_range_close_cnt);
 	UET_PDS_INFO("%-30s : %u", "pdc_close_in_err_cnt",
-		     pds_state.pdc_close_in_err_cnt);
-
-	/* TODO: reclaim/free all packets stored in the bitmaps... */
-
-	/* destory all allocated PDCs */
-	while (!dlist_empty(&pds_state.pdc_alloc_head)) {
-		dlist_pop_front(&pds_state.pdc_alloc_head,
-				struct uet_pdc, pdc, node);
-
-		if (pdc->is_initiator)
-			HASH_DELETE(pdc_ini_hh, pds_state.pdc_ini_ht, pdc);
-		else
-			HASH_DELETE(pdc_tgt_hh, pds_state.pdc_tgt_ht, pdc);
-
-		if (pdc->tx_bm)
-			bm_destroy(pdc->tx_bm);
-
-		if (pdc->rx_bm)
-			bm_destroy(pdc->rx_bm);
-	}
-
-	/* destroy all free PDCs */
-	while (!dlist_empty(&pds_state.pdc_free_head)) {
-		dlist_pop_front(&pds_state.pdc_free_head,
-				struct uet_pdc, pdc, node);
-
-		if (pdc->tx_bm)
-			bm_destroy(pdc->tx_bm);
-
-		if (pdc->rx_bm)
-			bm_destroy(pdc->rx_bm);
-	}
-
-	/* free any outstanding RUDI requests */
+		     state->pdc_close_in_err_cnt);
+	uet_pdsm_destroy(state);
+	uet->pds.state = NULL;
 	uet_pds_rudi_finalize();
-
-	/* wipe out all existing state */
-	memset(&pds_state, 0, sizeof(struct uet_pds_state));
-	pds_state.ready = false;
 }
 
-int uet_pds_ep_initialize(struct uet_ep *uet_ep)
+int uet_pds_ep_initialize(struct uet_ep *ep)
 {
-	PDS_GO();
+	struct uet_pds_pool *pool;
 
-	/* TODO: Anything needed here? */
-	uet_ep->pds = &pds_state;
-
-	return 0;
+	if (!ep->parent) {
+		ep->pds = ep->uet_domain->uet->pds.state;
+		return 0;
+	}
+	pool = uet_pds_pool_create(ep->context_slot * UET_PDC_MAX);
+	if (!pool)
+		return -ENOMEM;
+	ep->pds = uet_pdsm_create(pool, ep);
+	if (!ep->pds)
+		uet_pds_pool_destroy(pool);
+	return ep->pds ? 0 : -ENOMEM;
 }
 
-void uet_pds_ep_finalize(struct uet_ep *uet_ep)
+void uet_pds_ep_finalize(struct uet_ep *ep)
 {
-	PDS_GO();
-
-	/* TODO: Anything needed here? */
-	uet_ep->pds = NULL;
+	if (ep->parent)
+		uet_pdsm_destroy(ep->pds);
+	ep->pds = NULL;
 }
 
 static int uet_pds_tx_nack(struct uet_instance *uet,
@@ -1992,6 +1953,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		   size_t pkt_len,
 		   bool dma_rdy)
 {
+	struct uet_pds_state *state = uet_ep->pds;
 	struct uet_instance *uet;
 	struct uet_av_entry *av_entry;
 	struct uet_pdc_pkt *pdc_pkt;
@@ -2005,8 +1967,6 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	int rc, hdr_len, tx_bm_idx;
 	bool map_msg_id = false;
 	bool mapped_msg_id = false;
-
-	PDS_GO();
 
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *)dst_addr_handle;
@@ -2069,7 +2029,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		UET_PDS_DBG("SES Tx %p msg_id %u (pds_info pdcid %u psn %u)",
 			    tx_pkt_handle, msg_id, pds_info->pdcid,
 			    pds_info->opsn);
-		rc = uet_pdsm_get_pdc(pds_info->pdcid, true, &pdc);
+		rc = uet_pdsm_get_pdc(state, pds_info->pdcid, true, &pdc);
 		if (rc != 0) {
 			return rc;
 		}
@@ -2099,7 +2059,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			    tx_pkt_handle, msg_id,
 			    ((flags & UET_PDS_FLAG_EOM) ? " [EOM]" : ""));
 
-		pdc = uet_pdsm_get_msgid_pdc(msg_id);
+		pdc = uet_pdsm_get_msgid_pdc(state, msg_id);
 		if (!pdc) {
 			UET_PDS_DBG("failed to get PDC for non-SOM %p "
 				    "msg_id %u (EAGAIN)",
@@ -2274,7 +2234,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	}
 
 	if (map_msg_id) {
-		rc = uet_pdsm_map_msgid_pdc(msg_id, pdc);
+		rc = uet_pdsm_map_msgid_pdc(state, msg_id, pdc);
 		if (rc != 0) {
 			bm_unset(pdc->tx_bm, tx_bm_idx);
 			uet_pds_free_pdc_pkt(pdc_pkt);
@@ -2293,7 +2253,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		if (mapped_msg_id) {
 			pdc->active_msg_id = 0;
 			pdc->active_msg_id_valid = false;
-			if (uet_pdsm_unmap_msgid_pdc(msg_id) != 0)
+			if (uet_pdsm_unmap_msgid_pdc(state, msg_id) != 0)
 				UET_PDS_ERR("PDC %u failed to roll back msg_id %u",
 					    pdc->pdc_id, msg_id);
 		}
@@ -2335,7 +2295,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			pdc->active_msg_id = 0;
 			pdc->active_msg_id_valid = false;
 
-			rc = uet_pdsm_unmap_msgid_pdc(msg_id);
+			rc = uet_pdsm_unmap_msgid_pdc(state, msg_id);
 			if (rc != 0)
 				UET_PDS_ERR("PDC %u failed to unmap completed msg_id %u",
 					    pdc->pdc_id, msg_id);
@@ -2355,7 +2315,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 				UET_PDS_ERR("PDC %u PSN range exhausted; marked for close!",
 					    pdc->pdc_id);
 				pdc->close_requested = true;
-				pds_state.psn_range_close_cnt++;
+				state->psn_range_close_cnt++;
 			}
 		}
 	}
@@ -2459,11 +2419,11 @@ static int uet_pds_check_rtx_pkt(struct uet_instance *uet,
 	return -EAGAIN; /* pkt retransmitted, could be more */
 }
 
-int uet_pds_progress_tx_pkt(struct uet_instance *uet,
-			    uet_pkt_handle_t *err_pkt_handle,
-			    struct uet_pdc *pdc,
-			    struct uet_pdc_pkt *pdc_pkt)
+static int uet_pds_progress_tx_pkt(struct uet_ep *uet_ep,
+				   struct uet_pdc *pdc,
+				   struct uet_pdc_pkt *pdc_pkt)
 {
+	struct uet_instance *uet = uet_ep->uet_domain->uet;
 	uet_pkt_handle_t failed;
 	int rc;
 
@@ -2484,7 +2444,7 @@ int uet_pds_progress_tx_pkt(struct uet_instance *uet,
 		uet_pds_close_pdc_in_error(uet, pdc);
 
 		/* the rest of this message's pkts go with this failed one */
-		uet_pds_drop_tx_pkts(NULL, failed);
+		uet_pds_drop_tx_pkts(uet_ep, failed);
 
 		/*
 		 * Will return immediately to give the SES layer a chance to
@@ -2512,6 +2472,7 @@ int uet_pds_progress_tx_pkt(struct uet_instance *uet,
 int uet_pds_progress_tx(struct uet_ep *uet_ep,
 			uet_pkt_handle_t *err_pkt_handle)
 {
+	struct uet_pds_state *state = uet_ep->pds;
 	struct uet_instance *uet;
 	struct uet_pdc *pdc;
 	struct dlist_entry *tmp1, *tmp2;
@@ -2519,16 +2480,16 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 	time_t now;
 	int rc;
 
-	PDS_GO();
-
 	uet = uet_ep->uet_domain->uet;
 
 	/* drive RUDI initiator reliability (per-packet RTO) */
-	rc = uet_pds_rudi_progress_tx(uet_ep, err_pkt_handle);
-	if (rc != 0)
-		return rc;
+	if (!uet_ep->parent) {
+		rc = uet_pds_rudi_progress_tx(uet_ep, err_pkt_handle);
+		if (rc != 0)
+			return rc;
+	}
 
-	dlist_foreach_container_safe(&pds_state.pdc_alloc_head,
+	dlist_foreach_container_safe(&state->pdc_alloc_head,
 				     struct uet_pdc, pdc, node, tmp1) {
 		/* New_PDC_Time DoS timer that reaps PDCs in the PENDING state
 		 * that have waited past New_PDC_Time for the initiator to
@@ -2542,7 +2503,7 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 				UET_PDS_WARN("PENDING PDC %u reaped",
 					     pdc->pdc_id);
 				uet_pdsm_free_pdc(pdc);
-				pds_state.new_pdc_timeout_cnt++;
+				state->new_pdc_timeout_cnt++;
 			}
 
 			continue; /* PDC is still PENDING */
@@ -2585,8 +2546,7 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 		dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
 					     struct uet_pdc_pkt, pdc_pkt,
 					     node, tmp2) {
-			rc = uet_pds_progress_tx_pkt(uet, err_pkt_handle,
-						     pdc, pdc_pkt);
+			rc = uet_pds_progress_tx_pkt(uet_ep, pdc, pdc_pkt);
 
 			/* no retransmit, done with this PDC */
 			if (rc == 0)
@@ -2610,6 +2570,7 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 			 uet_pds_mode_t mode,
 			 uint16_t msg_id)
 {
+	struct uet_pds_state *state = uet_ep->pds;
 	struct uet_pdc *pdc;
 	int rc;
 
@@ -2620,7 +2581,7 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 	if ((mode == UET_PDS_MODE_RUDI) || (mode == UET_PDS_MODE_UUD))
 		return 0;
 
-	pdc = uet_pdsm_get_msgid_pdc(msg_id);
+	pdc = uet_pdsm_get_msgid_pdc(state, msg_id);
 	if (pdc == NULL)
 		return -EINVAL;
 
@@ -2631,7 +2592,7 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 	pdc->active_msg_id = 0;
 	pdc->active_msg_id_valid = false;
 
-	rc = uet_pdsm_unmap_msgid_pdc(msg_id);
+	rc = uet_pdsm_unmap_msgid_pdc(state, msg_id);
 	if (rc != 0)
 		return rc;
 
@@ -3455,11 +3416,12 @@ static int uet_pds_nack_action(uet_pds_nack_code_t code)
 static void uet_pds_close_pdc_in_error(struct uet_instance *uet,
 				       struct uet_pdc *pdc)
 {
+	struct uet_pds_state *state = pdc->owner;
 	struct uet_pdc_pkt *pdc_pkt;
 	struct dlist_entry *tmp;
 
 	UET_PDS_ERR("PDC %u closing in error", pdc->pdc_id);
-	pds_state.pdc_close_in_err_cnt++;
+	state->pdc_close_in_err_cnt++;
 
 	uet_pdsm_drain_tx_pkts(uet, pdc);
 
@@ -3557,7 +3519,7 @@ static int uet_pds_process_nack(struct uet_instance *uet,
 	int nack_action;
 	int rc;
 
-	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
+	rc = uet_pdsm_get_pdc(uet_pds_rx_state(uet, pp), pp->pds_dpdcid, false, &pdc);
 	if (rc != 0) {
 		UET_PDS_WARN("NACK for unknown/invalid PDC %u (nack_code=0x%x)",
 			     pp->pds_dpdcid, pp->pds_nack_code);
@@ -3675,7 +3637,7 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	bool duplicate = false;
 	int rc;
 
-	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
+	rc = uet_pdsm_get_pdc(uet_pds_rx_state(uet, pp), pp->pds_dpdcid, false, &pdc);
 	if (rc != 0) {
 		return rc;
 	}
@@ -3908,7 +3870,8 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 	uint32_t nack_payload = 0;
 	int rc;
 
-	rc = uet_pdsm_assign_tgt_pdc(pp, &pdc, &nack_code, &nack_payload);
+	rc = uet_pdsm_assign_tgt_pdc(uet_pds_rx_state(uet, pp), pp, &pdc,
+				     &nack_code, &nack_payload);
 	if (rc != 0) {
 		uet_pds_tx_nack(uet, NULL, pp, nack_code, nack_payload);
 		return rc;
@@ -4178,7 +4141,7 @@ static int uet_pds_process_control(struct uet_instance *uet,
 	int rc;
 
 	/* find the target PDC */
-	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
+	rc = uet_pdsm_get_pdc(uet_pds_rx_state(uet, pp), pp->pds_dpdcid, false, &pdc);
 	if (rc != 0) {
 		UET_PDS_WARN("CP type %d for unknown PDC %u",
 			     pp->pds_ctrl_type, pp->pds_dpdcid);
@@ -4289,7 +4252,8 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		return 0;
 	}
 
-	rc = uet_pdsm_get_pdc(pdc_pkt->pkt_pp.pds_dpdcid, false, &pdc);
+	rc = uet_pdsm_get_pdc(uet_pds_rx_state(uet, &pdc_pkt->pkt_pp),
+			      pdc_pkt->pkt_pp.pds_dpdcid, false, &pdc);
 	if (rc != 0) {
 		uet_pds_tx_nack(uet, NULL, &pdc_pkt->pkt_pp,
 				UET_NACK_INV_DPDCID, 0);
@@ -4393,27 +4357,49 @@ exit_err:
 	return rc;
 }
 
-int uet_pds_progress_rx(struct uet_instance *uet)
+static struct uet_ep *uet_pds_context_owner(struct uet_ep *parent,
+					    const struct uet_parsed_pkt *pp)
 {
-	uint8_t *pkt;
-	size_t pkt_len;
+	const struct iphdr *ip = pp->ip;
+	uint32_t peer = ntohl(ip->saddr);
+	struct uet_ep *matches[UET_MAX_PEER_CONTEXTS];
+	unsigned int count = 0;
+
+	/* In setup requests the destination field is a SYN offset. */
+	if (pp->pds_type == UET_PDS_TYPE_ROD_REQ &&
+	    (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)) {
+		uint32_t source_id = pp->pds_spdcid;
+		uint32_t hash = peer ^ (peer >> 16) ^ source_id ^
+				(source_id >> 6) ^ (source_id >> 12);
+
+		if (!source_id)
+			return NULL;
+		for (unsigned int i = 0; i < parent->context_slots; i++) {
+			struct uet_context_slot *slot = &parent->peer_contexts[i];
+
+			/* Keep closed slots in the hash to preserve other owners. */
+			if (slot->peer_ipv4 == peer)
+				matches[count++] = slot->ep;
+		}
+		return count ? matches[hash % count] : NULL;
+	}
+
+	unsigned int owner = pp->pds_dpdcid / UET_PDC_MAX;
+	if (owner >= parent->context_slots || pp->pds_dpdcid % UET_PDC_MAX == 0)
+		return NULL;
+	struct uet_ep *ep = parent->peer_contexts[owner].ep;
+	return ep && ep->peer_ipv4 == peer ? ep : NULL;
+}
+
+/* Consume a frame. PDS may keep it in the receive window. */
+static int uet_pds_rx_frame(struct uet_instance *uet, struct uet_ep *ep,
+			    uint8_t *pkt, size_t pkt_len)
+{
 	struct uet_parsed_pkt pp;
 	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl, pkt_is_nack;
-	struct uet_pdc_pkt *pdc_pkt = NULL;
-	struct uet_pdc *pdc;
-	uet_pds_next_hdr_t rsp_next_hdr;
-	void *rsp_ses_hdr = NULL;
-	size_t rsp_ses_hdr_len;
-	bool ses_nack, gtd_del, rtx;
 	uint32_t crc;
 	uint8_t *crc_start;
-	int rc = 0;
-
-	PDS_GO();
-
-	rc = uet_pds_sec_rx_pkt(uet, &pkt, &pkt_len);
-	if (rc != 1)
-		return rc;
+	int rc;
 
 	/* validate the packet */
 	if (!uet_pds_rx_pkt_chk(uet, pkt, pkt_len,
@@ -4431,6 +4417,25 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (rc != 0) {
 		UET_PDS_ERR("malformed Rx packet");
 		goto exit;
+	}
+
+	if (ep) {
+		/* The host is responsible for dispatch. Check the selected peer
+		 * and endpoint before entering any PDC or SES state.
+		 */
+		const struct iphdr *ip = pp.ip;
+		if (pp.sec || pp.is_ipv6 || ip->ihl != 5 ||
+		    ntohl(ip->saddr) != ep->peer_ipv4 ||
+		    ntohl(ip->daddr) != ep->ip_addr.v4 || pkt_is_rd_rsp ||
+		    uet_pds_context_owner(ep->parent, &pp) != ep ||
+		    !(pkt_is_ack || pkt_is_nack || pkt_is_ctrl ||
+		      (pp.pds_type == UET_PDS_TYPE_ROD_REQ &&
+		       pp.next_hdr == UET_HDR_REQ_STD && pp.ses_opcode == UET_SEND &&
+		       uet_ep_context_matches(ep, &pp)))) {
+			rc = -EINVAL;
+			goto exit;
+		}
+		pp.rx_context = ep;
 	}
 
 	if (!pp.sec) {
@@ -4494,6 +4499,71 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 exit:
 	free(pkt);
 	return rc;
+}
+
+int uet_pds_progress_rx(struct uet_instance *uet)
+{
+	uint8_t *pkt;
+	size_t len;
+	int rc = uet_pds_sec_rx_pkt(uet, &pkt, &len);
+
+	if (rc != 1)
+		return rc;
+	return uet_pds_rx_frame(uet, NULL, pkt, len);
+}
+
+static bool uet_pds_context_frame_valid(const struct uet_instance *uet,
+					const void *frame, size_t len)
+{
+	const struct ethhdr *eth = frame;
+	const struct iphdr *ip = (const struct iphdr *)(eth + 1);
+
+	return len >= sizeof(*eth) + sizeof(*ip) &&
+	       len <= uet->nic.max_pkt_size && eth->h_proto == htons(ETH_P_IP) &&
+	       ntohs(ip->tot_len) >= uet->nic.min_ip_pkt_size &&
+	       ntohs(ip->tot_len) <= len - sizeof(*eth) &&
+	       !(ntohs(ip->frag_off) & 0x3fff);
+}
+
+int uet_ep_context_route(uet_ep_handle_t ep_handle, void *frame, size_t len,
+			 uet_ep_handle_t *context)
+{
+	struct uet_ep *parent = ep_handle;
+	struct uet_ep *ep;
+	struct uet_instance *uet;
+	struct uet_parsed_pkt pp;
+	const struct iphdr *ip;
+
+	if (!parent || !parent->context_slots || !frame || !context)
+		return -EINVAL;
+	uet = parent->uet_domain->uet;
+	if (!uet_pds_context_frame_valid(uet, frame, len) ||
+	    uet_parse_pkt(uet, frame, len, &pp) || pp.sec || pp.is_ipv6)
+		return -EINVAL;
+	ip = pp.ip;
+	if (ip->ihl != 5 || ntohl(ip->daddr) != parent->ip_addr.v4)
+		return -EINVAL;
+
+	ep = uet_pds_context_owner(parent, &pp);
+	if (!ep)
+		return -ENOENT;
+	*context = ep;
+	return 0;
+}
+
+int uet_pds_rx_context(struct uet_ep *ep, const void *frame, size_t len)
+{
+	struct uet_instance *uet = ep->uet_domain->uet;
+	uint8_t *pkt;
+
+	if (!uet_pds_context_frame_valid(uet, frame, len))
+		return -EINVAL;
+	/* PDS retains frames for ordering and ACK replay. */
+	pkt = malloc(len);
+	if (!pkt)
+		return -ENOMEM;
+	memcpy(pkt, frame, len);
+	return uet_pds_rx_frame(uet, ep, pkt, len);
 }
 
 void uet_pds_ep_close_wait(struct uet_ep *uet_ep)

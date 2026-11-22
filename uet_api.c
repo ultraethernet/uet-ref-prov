@@ -32,8 +32,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -115,6 +115,19 @@ static void uet_init_uet_addr(struct uet_addr *uet_addr,
 	uet_addr->fep_cap = (UET_FEP_CAP_AI_FULL | UET_FEP_CAP_HPC);
 
 	memcpy(&uet_addr->fa, ip_addr, sizeof(struct uet_fa));
+}
+
+/* Contexts have a single owner under the experimental API contract. */
+static inline void uet_ep_data_lock(struct uet_ep *ep)
+{
+	if (!ep->parent)
+		pthread_mutex_lock(&ep->data_lock);
+}
+
+static inline void uet_ep_data_unlock(struct uet_ep *ep)
+{
+	if (!ep->parent)
+		pthread_mutex_unlock(&ep->data_lock);
 }
 
 /* get pds mode for an endpoint */
@@ -607,11 +620,32 @@ update_cnt:
  *      FI_SUCCESS on success
  *      negative value corresponding to fabric errno on error
  */
-static int uet_alloc_msg_id(struct uet_instance *uet, uint16_t *msg_id)
+static int uet_alloc_msg_id(struct uet_ep *ep, uint16_t *msg_id)
 {
+	struct uet_instance *uet = ep->uet_domain->uet;
 	int cnt;
 	uint16_t next_msg_id;
 	uint8_t *state, prev_state;
+
+	/* Each context owns a disjoint range of the instance ID space.
+	 * The parent cannot submit work and the instance admits no other endpoints.
+	 */
+	if (ep->parent) {
+		uint32_t base = ep->context_slot * UET_CONTEXT_MSG_IDS;
+		uint32_t limit = base + UET_CONTEXT_MSG_IDS;
+
+		for (uint32_t i = base; i < limit; i++) {
+			uint32_t id = ep->next_context_msg_id++;
+			if (ep->next_context_msg_id == limit)
+				ep->next_context_msg_id = base;
+			if (uet->msg_id_cb.state[id] == UET_MSG_ID_AVAILABLE) {
+				uet->msg_id_cb.state[id] = UET_MSG_ID_ALLOCATED;
+				*msg_id = id;
+				return FI_SUCCESS;
+			}
+		}
+		return -FI_EAGAIN;
+	}
 
 	next_msg_id = uet->msg_id_cb.next_msg_id;
 	for (cnt = 0, state = &uet->msg_id_cb.state[next_msg_id];
@@ -847,10 +881,10 @@ static void uet_dealloc_tx_rtr_token(struct uet_tx_desc *tx_desc)
 /* allocate next msg sequence number for address vector */
 static uint64_t uet_alloc_av_msg_seq_num(struct uet_av_entry *av_entry)
 {
-	uint64_t seq_num;
+	if (av_entry->context)
+		return av_entry->seq_num++;
 
-	seq_num = __atomic_fetch_add(&av_entry->seq_num, 1,  __ATOMIC_SEQ_CST);
-	return seq_num;
+	return __atomic_fetch_add(&av_entry->seq_num, 1, __ATOMIC_SEQ_CST);
 }
 
 /* determine if sequence number is next to be transmitted for av */
@@ -863,7 +897,10 @@ static bool uet_is_next_av_msg_tx_seq_num(struct uet_av_entry *av_entry,
 /* increment next msg sequence number for address vector */
 static void uet_inc_av_msg_next_tx_seq_num(struct uet_av_entry *av_entry)
 {
-	__atomic_fetch_add(&av_entry->next_tx_seq_num, 1,  __ATOMIC_SEQ_CST);
+	if (av_entry->context)
+		av_entry->next_tx_seq_num++;
+	else
+		__atomic_fetch_add(&av_entry->next_tx_seq_num, 1, __ATOMIC_SEQ_CST);
 }
 
 /* set next transmit sequence number for address vector */
@@ -871,6 +908,12 @@ static void uet_set_av_msg_tx_seq_num(struct uet_av_entry *av_entry,
 				      uint64_t new_tx_seq_num)
 {
 	uint64_t next_tx_seq_num;
+
+	if (av_entry->context) {
+		if (new_tx_seq_num < av_entry->next_tx_seq_num)
+			av_entry->next_tx_seq_num = new_tx_seq_num;
+		return;
+	}
 
 	while (1) {
 		next_tx_seq_num = av_entry->next_tx_seq_num;
@@ -927,6 +970,14 @@ static uint16_t uet_ep_entropy_init(const struct uet_ep *uet_ep)
 	hash = (hash ^ uet_ep->job_id) * 16777619U;
 	entropy = (uint16_t)(hash ^ (hash >> 16));
 	return entropy ? entropy : 1;
+}
+
+bool uet_ep_context_matches(struct uet_ep *ep, struct uet_parsed_pkt *pp)
+{
+	struct uet_ep_key key;
+
+	uet_ep_key_init(&key, pp);
+	return memcmp(&key, &ep->parent->ep_key, sizeof(key)) == 0;
 }
 
 static void uet_ep_key_init_local(struct uet_ep *uet_ep, uint16_t index)
@@ -1684,13 +1735,14 @@ static void uet_tx_desc_set_err(struct uet_tx_desc *tx_desc, int err_code,
 /* initiate message retransmission */
 static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 {
+	struct uet_ep *ep = tx_desc->uet_ep;
 	uint32_t max_retx;
 	time_t backoff_range, backoff_delta;
 	struct uet_av_entry *av_entry;
 
 	/* check for max retransmits */
 	tx_desc->retransmit_cnt++;
-	max_retx = tx_desc->uet_ep->uet_domain->uet->max_msg_retransmits;
+	max_retx = ep->uet_domain->uet->max_msg_retransmits;
 	if ((max_retx != UET_MSG_RETRANSMIT_MAX_INFINITY) &&
 	    (tx_desc->retransmit_cnt > max_retx)) {
 		uet_tx_desc_set_err(tx_desc, FI_EIO,
@@ -1709,9 +1761,11 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 	if (delay_retx) {
 		if ((max_retx == UET_MSG_RETRANSMIT_MAX_INFINITY) ||
 		    (tx_desc->retransmit_cnt == 1)) {
+			long jitter = ep->parent ? rand_r(&ep->retx_seed) : lrand48();
+
 			backoff_range = (tx_desc->backoff_max -
 					 tx_desc->backoff_min) + 1;
-			backoff_delta = ((time_t) lrand48()) % backoff_range;
+			backoff_delta = (time_t)jitter % backoff_range;
 			tx_desc->backoff = tx_desc->backoff_min + backoff_delta;
 		} else
 			/* exponential backoff */
@@ -2128,15 +2182,19 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 
 	pds->downcall.ep_finalize(uet_ep);
 
-	item = &uet_ep->ep_list_entry;
-	uet_rw_lock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
-	dlist_remove(item);
-	uet_rw_unlock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
-
-	pthread_mutex_destroy(&uet_ep->data_lock);
+	if (uet_ep->parent) {
+		uet_ep->parent->peer_contexts[uet_ep->context_slot].ep = NULL;
+		uet_ep->parent->live_contexts--;
+	} else {
+		free(uet_ep->peer_contexts);
+		item = &uet_ep->ep_list_entry;
+		uet_rw_lock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
+		dlist_remove(item);
+		uet_rw_unlock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
+		pthread_mutex_destroy(&uet_ep->data_lock);
+	}
 
 	free(uet_ep);
-	uet_ep = NULL; /* To prevent use after free */
 }
 
 /* free resources associated with all endpoints of a domain */
@@ -2149,9 +2207,14 @@ static void uet_ep_free_all(struct uet_domain *uet_dom)
 	dlist_foreach(head, item) {
 		uet_ep = container_of(item, struct uet_ep,
 				      ep_list_entry);
-		dlist_remove(item);
-		item = head;
+		for (unsigned int i = 0; i < uet_ep->context_slots; i++) {
+			struct uet_ep *context = uet_ep->peer_contexts[i].ep;
+
+			if (context)
+				uet_ep_free(context);
+		}
 		uet_ep_free(uet_ep);
+		item = head;
 	}
 }
 
@@ -3267,7 +3330,7 @@ static uet_ses_rc_t uet_rx_dsend(struct uet_ep *uet_ep,
 		return UET_RC_NO_MATCH;
 
 	/* allocate msg id for rtr */
-	rc = uet_alloc_msg_id(uet, &msg_id);
+	rc = uet_alloc_msg_id(uet_ep, &msg_id);
 	if (rc != FI_SUCCESS)
 		return UET_RC_NO_MATCH;
 
@@ -4566,7 +4629,9 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		job_id = uet_get_std_req_job_id(ses_std_req);
 		if (pp->ses_opcode != UET_DEFER_RTR) {
 			uet_ep_key_init(&ep_key, pp);
-			uet_ep = uet_ep_hash_lookup(uet, &ep_key);
+			uet_ep = pp->rx_context;
+			if (!uet_ep)
+				uet_ep = uet_ep_hash_lookup(uet, &ep_key);
 			if (uet_ep == NULL) {
 				UET_API_ERR("RX: Unknown Endpoint");
 				ses_rc = UET_RC_UNDELIVERABLE;
@@ -6001,6 +6066,12 @@ static ssize_t uet_recv_api_common(
 
 	uet_ep = (struct uet_ep *) ep_handle;
 
+	if (uet_ep->context_slots)
+		return -FI_EBUSY;
+	if (uet_ep->parent && (recv_api != UET_RECV_API ||
+	    uet_ep->ep_state != UET_EP_ENABLED || mr_handle || seg))
+		return -FI_ENOSYS;
+
 	/* check that rx completion queue is bound to endpoint */
 	if (uet_ep->recv_cq.cq_state == UET_CQ_DOWN) {
 		UET_API_ERR("No RX Completion Q");
@@ -6061,12 +6132,12 @@ static ssize_t uet_recv_api_common(
 		}
 	}
 
-	pthread_mutex_lock(&uet_ep->data_lock);
+	uet_ep_data_lock(uet_ep);
 
 	/* allocate rx descriptor */
 	rx_desc = uet_rx_desc_list_pop(uet_ep);
 	if (rx_desc == NULL) {
-		pthread_mutex_unlock(&uet_ep->data_lock);
+		uet_ep_data_unlock(uet_ep);
 		free(iov_handle);
 		free(seg_handle);
 		return -FI_EAGAIN;
@@ -6138,7 +6209,7 @@ static ssize_t uet_recv_api_common(
 
 	uet_tx_rtr_try(uet_ep, rx_desc, recv_api);
 
-	pthread_mutex_unlock(&uet_ep->data_lock);
+	uet_ep_data_unlock(uet_ep);
 	return FI_SUCCESS;
 }
 
@@ -6186,6 +6257,16 @@ static ssize_t uet_send_req_api_common(
 	uet_ep = (struct uet_ep *) ep_handle;
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *) dst_addr_handle;
+
+	if (uet_ep->context_slots)
+		return -FI_EBUSY;
+	if (uet_ep->parent && (send_req_api != UET_SEND_API ||
+	    uet_ep->ep_state != UET_EP_ENABLED || mr_handle || seg ||
+	    !av_entry || uet_addr_is_ipv6(av_entry->addr) ||
+	    av_entry->addr->fa.v4 != uet_ep->peer_ipv4))
+		return -FI_ENOSYS;
+	if (av_entry && av_entry->context != (uet_ep->parent ? uet_ep : NULL))
+		return -FI_EINVAL;
 
 	/* check that tx completion queue is bound to endpoint */
 	if (uet_ep->send_cq.cq_state == UET_CQ_DOWN) {
@@ -6247,8 +6328,13 @@ static ssize_t uet_send_req_api_common(
 		}
 	}
 
+	if (uet_ep->parent && msg_len >= uet->msg_rndz_size) {
+		free(iov_handle);
+		return -FI_EMSGSIZE;
+	}
+
 	/* allocate msg id */
-	rc = uet_alloc_msg_id(uet, &msg_id);
+	rc = uet_alloc_msg_id(uet_ep, &msg_id);
 	if (rc != FI_SUCCESS) {
 		free(iov_handle);
 		free(seg_handle);
@@ -6273,12 +6359,12 @@ static ssize_t uet_send_req_api_common(
 		break;
 	}
 
-	pthread_mutex_lock(&uet_ep->data_lock);
+	uet_ep_data_lock(uet_ep);
 
 	/* allocate tx descriptor */
 	tx_desc = uet_tx_desc_list_pop(uet_ep);
 	if (tx_desc == NULL) {
-		pthread_mutex_unlock(&uet_ep->data_lock);
+		uet_ep_data_unlock(uet_ep);
 		free(iov_handle);
 		free(seg_handle);
 		uet_dealloc_msg_id(uet, msg_id);
@@ -6311,7 +6397,7 @@ static ssize_t uet_send_req_api_common(
 		rx_desc = uet_rx_desc_list_pop(uet_ep);
 		if (rx_desc == NULL) {
 			uet_tx_desc_list_insert(tx_desc);
-			pthread_mutex_unlock(&uet_ep->data_lock);
+			uet_ep_data_unlock(uet_ep);
 			free(iov_handle);
 			free(seg_handle);
 			uet_dealloc_msg_id(uet, msg_id);
@@ -6336,7 +6422,7 @@ static ssize_t uet_send_req_api_common(
 				calloc(seg_count, sizeof(struct uet_mr_seg));
 
 			if (rx_seg == NULL) {
-				pthread_mutex_unlock(&uet_ep->data_lock);
+				uet_ep_data_unlock(uet_ep);
 				free(iov_handle);
 				free(seg_handle);
 				return -FI_ENOMEM;
@@ -6491,7 +6577,7 @@ static ssize_t uet_send_req_api_common(
 	uet_ep->num_active_sends++;
 	av_entry->num_active_ops++;
 
-	pthread_mutex_unlock(&uet_ep->data_lock);
+	uet_ep_data_unlock(uet_ep);
 	return FI_SUCCESS;
 }
 
@@ -7166,27 +7252,31 @@ enum uet_encap uet_tx_encap(uet_domain_handle_t domain_handle)
 }
 
 #if ENABLE_VERBS
-int uet_endpoint(uet_domain_handle_t domain_handle,
+static int uet_endpoint_create(struct uet_ep *parent,
+		 uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
 		 void *context, uet_ep_handle_t *ep_handle,
 		 uint16_t pid_on_fep, uint16_t resource_index,
 		 uint32_t initiator_id, uint32_t job_id,
 		 bool absolute, bool is_ipv6, uint32_t path_mtu)
 #else
-int uet_endpoint(uet_domain_handle_t domain_handle,
+static int uet_endpoint_create(struct uet_ep *parent,
+		 uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
 		 void *context, uet_ep_handle_t *ep_handle)
 #endif
 {
 	int rc;
 	size_t i;
-	bool data_lock_initialized = false;
+	bool data_lock_initialized = false, hash_inserted = false;
 	struct uet_domain *uet_dom;
 	struct uet_ep *uet_ep;
 	struct uet_pds *pds;
 
 	uet_dom = (struct uet_domain *) domain_handle;
 	pds = &uet_dom->uet->pds;
+	if (!parent && uet_dom->uet->context_parent)
+		return -FI_EBUSY;
 
 	/* allocate memory for ep object */
 	uet_ep = calloc(1, sizeof(struct uet_ep));
@@ -7194,6 +7284,16 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		UET_API_PRINT_ERRNO("calloc");
 		rc = -FI_ENOMEM;
 		goto err_exit;
+	}
+
+	uet_ep->parent = parent;
+	if (parent) {
+		uet_ep->context_slot = parent->context_slots;
+		uet_ep->uet_addr = parent->uet_addr;
+		uet_ep->job_id = parent->job_id;
+		uet_ep->absolute = parent->absolute;
+		uet_ep->max_payload_len = parent->max_payload_len;
+		goto init_queues;
 	}
 
 	rc = pthread_mutex_init(&uet_ep->data_lock, NULL);
@@ -7253,6 +7353,7 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		goto err_exit;
 	}
 #endif
+init_queues:
 	memcpy(&uet_ep->ip_addr, &uet_ep->uet_addr.fa, sizeof(struct uet_fa));
 	if (uet_ep->uet_addr.pid_on_fep >
 	    (UET_SES_REQ_PID_ON_FEP_MASK >> UET_SES_REQ_PID_ON_FEP_SHIFT) ||
@@ -7324,24 +7425,30 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->context = context;
 	uet_ep->send_cq.cq_state = UET_CQ_DOWN;
 	uet_ep->recv_cq.cq_state = UET_CQ_DOWN;
-	rc = uet_nic_ep_register(UET_NIC(uet_dom->uet), uet_ep,
-				 &uet_ep->nic_ep_context);
-	if (rc != FI_SUCCESS) {
-		UET_API_ERR("uet_nic_ep_register");
-		goto err_exit;
-	}
 
-	rc = uet_ep_hash_insert(uet_ep, !ENABLE_VERBS);
-	if (rc != FI_SUCCESS) {
-		if (rc == -FI_EADDRINUSE)
-			UET_API_ERR("endpoint address is already in use");
-		else if (rc == -FI_ENOSPC)
-			UET_API_ERR("no endpoint Resource Index is available");
-		else
-			UET_API_ERR("failed to allocate endpoint address");
-		goto err_exit;
+	if (!parent) {
+		rc = uet_nic_ep_register(UET_NIC(uet_dom->uet), uet_ep,
+					 &uet_ep->nic_ep_context);
+		if (rc != FI_SUCCESS) {
+			UET_API_ERR("uet_nic_ep_register");
+			goto err_exit;
+		}
+
+		rc = uet_ep_hash_insert(uet_ep, !ENABLE_VERBS);
+		if (rc != FI_SUCCESS) {
+			if (rc == -FI_EADDRINUSE)
+				UET_API_ERR("endpoint address is already in use");
+			else if (rc == -FI_ENOSPC)
+				UET_API_ERR("no endpoint Resource Index is available");
+			else
+				UET_API_ERR("failed to allocate endpoint address");
+			goto err_exit;
+		}
+		hash_inserted = true;
+		uet_ep->entropy = uet_ep_entropy_init(uet_ep);
+	} else {
+		uet_ep->entropy = parent->entropy;
 	}
-	uet_ep->entropy = uet_ep_entropy_init(uet_ep);
 
 	switch (info->tx_attr->tclass) {
 	case FI_TC_BEST_EFFORT:
@@ -7353,26 +7460,115 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		break;
 	}
 
-	pds->downcall.ep_initialize(uet_ep);
+	rc = pds->downcall.ep_initialize(uet_ep);
+	if (rc)
+		goto err_exit;
 	uet_ep->ep_state = UET_EP_DISABLED;
 
-	/* insert object into ep list */
-	uet_ep_insert(uet_ep);
+	if (!parent)
+		uet_ep_insert(uet_ep);
 
 	*ep_handle = uet_ep;
 	return FI_SUCCESS;
 
 err_exit:
 	if (uet_ep) {
+		if (hash_inserted)
+			uet_ep_hash_remove(uet_ep);
 		uet_nic_ep_unregister(UET_NIC(uet_dom->uet),
 				      uet_ep->nic_ep_context);
 		uet_ep->nic_ep_context = NULL;
+		if (uet_ep->pds)
+			pds->downcall.ep_finalize(uet_ep);
 		uet_desc_free(uet_ep);
 		if (data_lock_initialized)
 			pthread_mutex_destroy(&uet_ep->data_lock);
 		free(uet_ep);
 	}
 	return rc;
+}
+
+#if ENABLE_VERBS
+int uet_endpoint(uet_domain_handle_t domain_handle,
+		 struct fi_info *info, struct fid_ep *ep,
+		 void *context, uet_ep_handle_t *ep_handle,
+		 uint16_t pid_on_fep, uint16_t resource_index,
+		 uint32_t initiator_id, uint32_t job_id,
+		 bool absolute, bool is_ipv6, uint32_t path_mtu)
+{
+	return uet_endpoint_create(NULL, domain_handle, info, ep, context,
+				   ep_handle, pid_on_fep, resource_index,
+				   initiator_id, job_id, absolute, is_ipv6, path_mtu);
+}
+#else
+int uet_endpoint(uet_domain_handle_t domain_handle,
+		 struct fi_info *info, struct fid_ep *ep,
+		 void *context, uet_ep_handle_t *ep_handle)
+{
+	return uet_endpoint_create(NULL, domain_handle, info, ep, context, ep_handle);
+}
+#endif
+
+int uet_ep_context_open(uet_ep_handle_t ep_handle, uint32_t peer_ipv4,
+			uet_ep_handle_t *context)
+{
+	struct uet_ep *parent = ep_handle, *ep;
+	struct uet_instance *uet;
+	unsigned int slot;
+	time_t seed;
+	int rc;
+
+	if (!parent || parent->parent || !context || !peer_ipv4)
+		return -FI_EINVAL;
+	uet = parent->uet_domain->uet;
+	if (parent->ever_enabled || parent->ep_state != UET_EP_DISABLED ||
+	    uet->ep_hash_table != parent ||
+	    parent->ep_hh.next || peer_ipv4 == uet->nic.ipv4_addr)
+		return -FI_EINVAL;
+	if (!uet->pds.state ||
+	    uet_addr_is_ipv6(&parent->uet_addr) || parent->absolute ||
+	    uet_get_pds_mode(parent, false) != UET_PDS_MODE_ROD ||
+	    getenv("UET_FORCE_UUD") || getenv(UET_SEC_MODE) ||
+	    getenv("UET_IMPAIRMENT_SHIM"))
+		return -FI_ENOSYS;
+	slot = parent->context_slots;
+	if (slot == UET_MAX_PEER_CONTEXTS)
+		return -FI_ENOSPC;
+	if (!parent->peer_contexts) {
+		parent->peer_contexts = calloc(UET_MAX_PEER_CONTEXTS,
+					       sizeof(*parent->peer_contexts));
+		if (!parent->peer_contexts)
+			return -FI_ENOMEM;
+	}
+
+	rc = uet_endpoint_create(parent, parent->uet_domain, parent->info, NULL, NULL,
+				 context
+#if ENABLE_VERBS
+				 , 0, 0, 0, 0, false, false, 0
+#endif
+				 );
+	if (rc)
+		return rc;
+	ep = *context;
+	ep->peer_ipv4 = peer_ipv4;
+	ep->next_context_msg_id = slot * UET_CONTEXT_MSG_IDS;
+	uet_gettime(&seed);
+	ep->retx_seed = ((unsigned int)seed * UET_MAX_PEER_CONTEXTS + slot) ^
+		       parent->ip_addr.v4;
+	parent->peer_contexts[slot] = (struct uet_context_slot){ ep, peer_ipv4 };
+	parent->context_slots++;
+	parent->live_contexts++;
+	uet->context_parent = parent;
+	return FI_SUCCESS;
+}
+
+int uet_ep_context_rx(uet_ep_handle_t ep_handle, const void *frame, size_t len)
+{
+	struct uet_ep *ep = ep_handle;
+
+	if (!ep || !ep->parent || ep->ep_state != UET_EP_ENABLED || !frame)
+		return -FI_EINVAL;
+	return uet_pds_rx_context(ep, frame, len);
 }
 
 int uet_getname(uet_ep_handle_t ep_handle, struct uet_addr *uet_addr)
@@ -7500,7 +7696,13 @@ int uet_ep_enable(uet_ep_handle_t ep_handle)
 	struct uet_ep *uet_ep;
 
 	uet_ep = (struct uet_ep *) ep_handle;
+	if (uet_ep->context_slots)
+		return -FI_EBUSY;
 	uet_ep->ep_state = UET_EP_ENABLED;
+	if (uet_ep->parent)
+		uet_ep->parent->ever_enabled = true;
+	else
+		uet_ep->ever_enabled = true;
 
 	return FI_SUCCESS;
 }
@@ -7562,7 +7764,7 @@ ssize_t uet_ep_flush(uet_ep_handle_t ep_handle, size_t max)
 
 	pds = &uet_ep->uet_domain->uet->pds;
 
-	pthread_mutex_lock(&uet_ep->data_lock);
+	uet_ep_data_lock(uet_ep);
 
 	ring = &uet_ep->tx_ring;
 
@@ -7598,7 +7800,7 @@ ssize_t uet_ep_flush(uet_ep_handle_t ep_handle, size_t max)
 		done++;
 	}
 
-	pthread_mutex_unlock(&uet_ep->data_lock);
+	uet_ep_data_unlock(uet_ep);
 
 	return (ssize_t)done;
 }
@@ -7612,6 +7814,8 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 	pds = &uet_ep->uet_domain->uet->pds;
 
 	/* Error if there are outstanding msg transmits */
+	if (uet_ep->live_contexts || uet_ep->context_av_count)
+		return -FI_EBUSY;
 	if ((uet_ep->num_active_sends)) {
 		UET_API_ERR("Outstanding sends associated with EP being closed");
 		return -FI_EBUSY;
@@ -7622,9 +7826,13 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 	else
 		uet_mr_hash_finalize(uet_ep);
 
-	pds->downcall.ep_close_wait(uet_ep);
-
-	uet_ep_hash_remove(uet_ep);
+	if (!uet_ep->parent) {
+		if (uet_ep->context_slots)
+			uet_ep->uet_domain->uet->context_parent = NULL;
+		else
+			pds->downcall.ep_close_wait(uet_ep);
+		uet_ep_hash_remove(uet_ep);
+	}
 
 	uet_ep_free(uet_ep);
 
@@ -7645,7 +7853,7 @@ uint32_t uet_cq_read_src_id(uet_cq_handle_t cq_handle)
  * packet through the PDS, drives pending transmits, and retries deferred
  * transmit messages.
  *
- * NOTE: the caller MUST hold uet_ep->data_lock
+ * The caller must own the context or hold the ordinary endpoint's data lock.
  */
 static void uet_ep_progress_locked(struct uet_ep *uet_ep)
 {
@@ -7653,12 +7861,16 @@ static void uet_ep_progress_locked(struct uet_ep *uet_ep)
 	uet_pkt_handle_t err_pkt_handle;
 	struct uet_pds *pds;
 
+	if (uet_ep->context_slots)
+		return;
+
 	pds = &uet_ep->uet_domain->uet->pds;
 
 	uet_msg_age(uet_ep);
 	uet_rx_sync_grp_age(uet_ep);
 
-	pds->downcall.progress_rx(uet_ep->uet_domain->uet);
+	if (!uet_ep->parent)
+		pds->downcall.progress_rx(uet_ep->uet_domain->uet);
 
 	rc = pds->downcall.progress_tx(uet_ep, &err_pkt_handle);
 	switch (rc) {
@@ -7679,9 +7891,9 @@ int uet_ep_progress(uet_ep_handle_t ep_handle)
 	if (uet_ep == NULL)
 		return -FI_EINVAL;
 
-	pthread_mutex_lock(&uet_ep->data_lock);
+	uet_ep_data_lock(uet_ep);
 	uet_ep_progress_locked(uet_ep);
-	pthread_mutex_unlock(&uet_ep->data_lock);
+	uet_ep_data_unlock(uet_ep);
 
 	return FI_SUCCESS;
 }
@@ -7702,9 +7914,9 @@ int uet_progress(uet_domain_handle_t domain_handle)
 	dlist_foreach(head, item) {
 		uet_ep = container_of(item, struct uet_ep, ep_list_entry);
 
-		pthread_mutex_lock(&uet_ep->data_lock);
+		uet_ep_data_lock(uet_ep);
 		uet_ep_progress_locked(uet_ep);
-		pthread_mutex_unlock(&uet_ep->data_lock);
+		uet_ep_data_unlock(uet_ep);
 	}
 
 	uet_rw_unlock(&uet_dom->ep_lock, UET_RW_LOCK_RD_ACCESS);
@@ -7723,14 +7935,14 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 	cq = (struct uet_cq *) cq_handle;
 	uet_ep = cq->uet_ep;
 
-	pthread_mutex_lock(&uet_ep->data_lock);
+	uet_ep_data_lock(uet_ep);
 
 	uet_ep_progress_locked(uet_ep);
 
 	ring = &cq->ring;
 	cq_count = uet_ring_entry_cnt(ring);
 	if (cq_count == 0) {
-		pthread_mutex_unlock(&uet_ep->data_lock);
+		uet_ep_data_unlock(uet_ep);
 		return 0;
 	}
 
@@ -7749,7 +7961,7 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 					     ring);
 	}
 
-	pthread_mutex_unlock(&uet_ep->data_lock);
+	uet_ep_data_unlock(uet_ep);
 	return rd_count;
 }
 
@@ -7766,10 +7978,10 @@ ssize_t uet_cq_readerr(uet_cq_handle_t cq_handle,
 	ring = &cq->ring;
 	uet_ep = cq->uet_ep;
 
-	pthread_mutex_lock(&uet_ep->data_lock);
+	uet_ep_data_lock(uet_ep);
 
 	if (!uet_cq_is_err_state(ring)) {
-		pthread_mutex_unlock(&uet_ep->data_lock);
+		uet_ep_data_unlock(uet_ep);
 		return -FI_EAGAIN;
 	}
 
@@ -7784,7 +7996,7 @@ ssize_t uet_cq_readerr(uet_cq_handle_t cq_handle,
 
 	uet_ring_tail_advance(ring);
 
-	pthread_mutex_unlock(&uet_ep->data_lock);
+	uet_ep_data_unlock(uet_ep);
 	return 1;
 }
 
@@ -7809,17 +8021,13 @@ int uet_cq_close(uet_cq_handle_t cq_handle)
 	return FI_SUCCESS;
 }
 
-int uet_av_insert(uet_domain_handle_t domain_handle,
-		  struct uet_addr *uet_addr,
-		  uet_addr_handle_t *addr_handle)
+static int uet_av_insert_common(struct uet_domain *uet_dom,
+				struct uet_ep *context, struct uet_addr *uet_addr,
+				uet_addr_handle_t *addr_handle)
 {
 	int rc;
-	struct uet_instance *uet;
-	struct uet_domain *uet_dom;
+	struct uet_instance *uet = uet_dom->uet;
 	struct uet_av_entry *av_entry;
-
-	uet_dom = (struct uet_domain *) domain_handle;
-	uet = uet_dom->uet;
 
 	/* allocate memory for av object */
 	av_entry = calloc(1, sizeof(struct uet_av_entry));
@@ -7830,6 +8038,7 @@ int uet_av_insert(uet_domain_handle_t domain_handle,
 
 	/* initialize av entry */
 	av_entry->addr = uet_addr;
+	av_entry->context = context;
 	rc = uet_nic_get_nh(UET_NIC(uet), &uet_addr->fa,
 			    uet_addr_is_ipv6(uet_addr),
 			    av_entry->nh_mac_addr);
@@ -7837,11 +8046,32 @@ int uet_av_insert(uet_domain_handle_t domain_handle,
 		av_entry->flags |= UET_NH_MAC_ADDR_V;
 
 	/* insert av object in list of av entries for domain */
-	uet_dom = (struct uet_domain *) domain_handle;
 	uet_av_entry_insert(uet_dom, av_entry);
+	if (context)
+		context->context_av_count++;
 
 	*addr_handle = av_entry;
 	return FI_SUCCESS;
+}
+
+int uet_av_insert(uet_domain_handle_t domain_handle, struct uet_addr *uet_addr,
+		  uet_addr_handle_t *addr_handle)
+{
+	return uet_av_insert_common(domain_handle, NULL, uet_addr, addr_handle);
+}
+
+int uet_ep_context_av_insert(uet_ep_handle_t ep_handle, struct uet_addr *addr,
+			     uet_addr_handle_t *addr_handle)
+{
+	struct uet_ep *ep = ep_handle;
+
+	if (!ep || !ep->parent || !addr || !addr_handle ||
+	    uet_addr_is_ipv6(addr) || addr->fa.v4 != ep->peer_ipv4)
+		return -FI_EINVAL;
+	if (ep->parent->ever_enabled)
+		return -FI_EBUSY;
+
+	return uet_av_insert_common(ep->uet_domain, ep, addr, addr_handle);
 }
 
 int uet_av_remove(uet_addr_handle_t addr_handle)
@@ -7856,6 +8086,8 @@ int uet_av_remove(uet_addr_handle_t addr_handle)
 		return -FI_EBUSY;
 	}
 
+	if (av_entry->context)
+		av_entry->context->context_av_count--;
 	uet_av_entry_free(av_entry);
 
 	return -FI_SUCCESS;
