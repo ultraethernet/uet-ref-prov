@@ -319,8 +319,11 @@ struct uet_pds_to_ses_funcs {
 		       uet_pds_err_code_t reason);
 };
 
+struct uet_pds_state;
+
 /* pds control block structure - embedded in uet_instance struct */
 struct uet_pds {
+	struct uet_pds_state *state;	/* instance-owned PDC manager */
 	struct uet_ses_to_pds_funcs downcall;     /* ptr's to pds functions */
 	struct uet_pds_to_ses_funcs upcall;       /* ptr's to ses functions */
 	time_t tx_timeout;               /* retry after this amount of time */
