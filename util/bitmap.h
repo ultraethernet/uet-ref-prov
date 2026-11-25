@@ -12,7 +12,8 @@
 struct bitmap {
 	uint64_t *bit_arr;
 	int bit_arr_len;
-	void **data_arr; /* pointer to store data per bit */
+	void **data_arr; /* circular storage indexed by logical bit plus data_base */
+	unsigned int data_base;
 	int size;
 };
 
