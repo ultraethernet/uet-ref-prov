@@ -380,6 +380,27 @@ static void test_shift(void)
 	CHECK(bm_get(bm, 0, &data) == false);
 	CHECK(data == NULL);
 
+	/* Shift past the data array boundary without exposing expired pointers. */
+	bm_clear(bm);
+	bm_set(bm, 0, PA);
+	bm_set(bm, 127, PB);
+	bm_shift_right(bm, 63);
+	CHECK(bm_get(bm, 64, &data) && data == PB);
+	data = PA;
+	CHECK(!bm_get(bm, 65, &data) && data == NULL);
+	bm_set(bm, 126, PC);
+	bm_shift_right(bm, 64);
+	CHECK(bm_get(bm, 0, &data) && data == PB);
+	CHECK(bm_get(bm, 62, &data) && data == PC);
+	bm_set(bm, 65, PA);
+	bm_shift_right(bm, 1);
+	CHECK(bm_get(bm, 61, &data) && data == PC);
+	bm_shift_left(bm, 3);
+	CHECK(bm_get(bm, 64, &data) && data == PC);
+	CHECK(bm_get(bm, 67, &data) && data == PA);
+	bm_shift_left(bm, 129);
+	CHECK_EQ(bm_count(bm), 0);
+
 	bm_destroy(bm);
 }
 

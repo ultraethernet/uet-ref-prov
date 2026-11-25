@@ -26,6 +26,7 @@ struct bitmap *bm_create(int size)
 		return NULL;
 
 	bm->size = size;
+	bm->data_base = 0;
 	bm->bit_arr_len = (bm->size / (sizeof(uint64_t) * 8));
 
 	bm->bit_arr = (uint64_t *)calloc(bm->bit_arr_len, sizeof(uint64_t));
@@ -55,6 +56,7 @@ void bm_clear(struct bitmap *bm)
 {
 	memset(bm->bit_arr, 0, (sizeof(uint64_t) * bm->bit_arr_len));
 	memset(bm->data_arr, 0, (sizeof(void *) * bm->size));
+	bm->data_base = 0;
 }
 
 int bm_count(const struct bitmap *bm)
@@ -65,6 +67,14 @@ int bm_count(const struct bitmap *bm)
 		total += TOTAL_NONZERO(bm->bit_arr[i]);
 
 	return total;
+}
+
+/* Callers validate the logical index before translating it. */
+static unsigned int bm_data_index(const struct bitmap *bm, unsigned int i)
+{
+	unsigned int index = bm->data_base + i;
+
+	return index < (unsigned int)bm->size ? index : index - bm->size;
 }
 
 bool bm_set(struct bitmap *bm, int i, void *data)
@@ -80,7 +90,7 @@ bool bm_set(struct bitmap *bm, int i, void *data)
 		return false;
 
 	bm->bit_arr[idx] |= ((uint64_t)1 << (i % 64));
-	bm->data_arr[i] = data;
+	bm->data_arr[bm_data_index(bm, i)] = data;
 	return true;
 }
 
@@ -95,12 +105,13 @@ void bm_unset(struct bitmap *bm, int i)
 		return; /* could assert() here */
 
 	bm->bit_arr[idx] &= ~((uint64_t)1 << (i % 64));
-	bm->data_arr[i] = NULL;
+	bm->data_arr[bm_data_index(bm, i)] = NULL;
 }
 
 bool bm_get(const struct bitmap *bm, int i, void **data)
 {
 	int idx = (i / 64);
+	bool present;
 
 	if (idx >= bm->bit_arr_len)
 		return false; /* could assert() here */
@@ -108,10 +119,10 @@ bool bm_get(const struct bitmap *bm, int i, void **data)
 	if ((i < 0) || (i >= bm->size))
 		return false; /* could assert() here */
 
+	present = (bm->bit_arr[idx] & (1ULL << (i % 64))) != 0;
 	if (data)
-		*data = bm->data_arr[i];
-
-	return ((bm->bit_arr[idx] & ((uint64_t)1 << (i % 64))) != 0);
+		*data = present ? bm->data_arr[bm_data_index(bm, i)] : NULL;
+	return present;
 }
 
 int bm_min(const struct bitmap *bm)
@@ -148,8 +159,12 @@ void bm_shift_left(struct bitmap *bm, int s)
 	int shift = (s % 64);
 	int i;
 
-	if (s == 0)
-		return; /* nothing to do */
+	if (s <= 0)
+		return;
+	if (s >= bm->size) {
+		bm_clear(bm);
+		return;
+	}
 
 	if (shift == 0) {
 		for (i = (bm->bit_arr_len - 1); i >= chop_words; i--)
@@ -169,11 +184,8 @@ void bm_shift_left(struct bitmap *bm, int s)
 	for (i = 0; i < chop_words; i++)
 		bm->bit_arr[i] = 0;
 
-	/* shift the data pointer array */
-	for (i = (bm->size - 1); i >= s; i--)
-		bm->data_arr[i] = bm->data_arr[i - s];
-	for (i = 0; i < s; i++)
-		bm->data_arr[i] = NULL;
+	/* Moving the origin preserves the pointer of every retained bit. */
+	bm->data_base = bm_data_index(bm, bm->size - s);
 }
 
 void bm_shift_right(struct bitmap *bm, int s)
@@ -182,8 +194,12 @@ void bm_shift_right(struct bitmap *bm, int s)
 	int shift = (s % 64);
 	int i;
 
-	if (s == 0)
-		return; /* nothing to do */
+	if (s <= 0)
+		return;
+	if (s >= bm->size) {
+		bm_clear(bm);
+		return;
+	}
 
 	if (shift == 0) {
 		for (i = 0; i < (bm->bit_arr_len - chop_words); i++)
@@ -204,11 +220,7 @@ void bm_shift_right(struct bitmap *bm, int s)
 	for (i = 0; i < chop_words; i++)
 		bm->bit_arr[bm->bit_arr_len - 1 - i] = 0;
 
-	/* shift the data pointer array */
-	for (i = 0; i < (bm->size - s); i++)
-		bm->data_arr[i] = bm->data_arr[i + s];
-	for (i = (bm->size - s); i < bm->size; i++)
-		bm->data_arr[i] = NULL;
+	bm->data_base = bm_data_index(bm, s);
 }
 
 /*
